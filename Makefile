@@ -4,11 +4,11 @@ NAME = gfc
 #Cross-compiling wrappers: [WRAP|NOWRAP]:
 export WRAP ?= NOWRAP
 #Compiler: [GNU|PGI|INTEL|CRAY|IBM]:
-export TOOLKIT ?= GNU
+export TOOLKIT ?= IBM
 #Optimization: [DEV|OPT]:
 export BUILD_TYPE ?= DEV
 #MPI Library: [MPICH|OPENMPI|NONE]:
-export MPILIB ?= MPICH
+export MPILIB ?= NONE
 #BLAS: [ATLAS|MKL|ACML]:
 export BLASLIB ?= ATLAS
 #Operating system: [LINUX|NO_LINUX]:
