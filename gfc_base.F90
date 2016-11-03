@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Base
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2016-06-30 (started 2016-02-17)
+!REVISION: 2016-11-03 (started 2016-02-17)
 
 !Copyright (C) 2014-2016 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2016 Oak Ridge National Laboratory (UT-Battelle)
@@ -20,60 +20,13 @@
 !You should have received a copy of the GNU Lesser General Public License
 !along with ExaTensor. If not, see <http://www.gnu.org/licenses/>.
 
-!DESIGN:
-! # A GFC container is a structured collection of objects of any class;
-!   Objects of different classes can be stored in the same container.
-! # Objects can be added to the container either by value or by reference;
-!   The same container may have elements added both ways.
-!   When adding objects to the container by value, only allocatable components
-!   of derived types are recursively cloned whereas the pointer components
-!   are just pointer associated. To change this default behavior, one can
-!   supply a user-defined generic copy constructor (see interface below).
-! # A GFC subcontainer is a container linked as a part of another container.
-!   As a consequence, its boundary elements may have outside links.
-!   In this case, the larger container will be called a composite container.
-! # Each container has an associated iterator for scanning over its elements.
-!   The structure of the container determines the scanning sequence, that is,
-!   the way the elements of the container are traversed over.
-!   There are four major ways of scanning over a container:
-!    1) Unpredicated passive scan: The iterator returns each new encountered
-!       element of the container.
-!    2) Predicated passive scan: The iterator returns each new encountered
-!       element of the container that satisfies a certain condition.
-!    3) Unpredicated active scan: The iterator traverses the entire container
-!       or its part and applies a user-defined action to each element.
-!    4) Predicated active scan: The iterator traverses the entire container
-!       or its part and applies a user-defined action to each element that
-!       satisfies a certain condition.
-!   Additionally, active scans allow for a time-limited execution, in which
-!   the scan is interrupted after some time interval specified by a user.
-!   Each specific class of containers has its own iterator class because
-!   of different linkage between the elements of different containers.
-!   All insertion, deletion, and search operations are done via iterators,
-!   that is, the iterator methods provide the only possible way of accessing,
-!   updating, and performing other actions on the associated container.
-!   All relevant iterator methods are thread-safe, thus enabling
-!   a parallel execution of container scans (via OpenMP threads).
-! # The container element deletion operation may require a user-defined
-!   destructor which will release all resources occupied by the object
-!   stored in that element, unless the object has FINAL methods defined
-!   (the interface for a user-defined generic destructor is provided below).
-!NOTES:
-! # This implementation of Generic Fortran containers heavily relies on
-!   dynamic polymorphism, thus introducing certain memory overhead which
-!   can be significant when storing small objects! Also dynamic type
-!   inferrence may decrease the efficiency when storing and operating
-!   on small objects. Thus, this implementation aims at providing a set
-!   of high-level abstractions for control logic and other high-level
-!   operations for which ultimate efficiency is not required. The use
-!   of GFC containers in the inner loop of compute intensive kernels
-!   is highly discouraged (please resort to plain data, like arrays).
-! # Due to the limitations of Fortran class inheritence, public methods
-!   with a trailing underscore shall not be used by the end user!
-! # Quick (constant time) element counting is deactivated when a container
-!   contains a subcontainer, in both the composite container and the subcontainer.
-!   The quick counting procedure is replaced by an order-N counting algorithm.
-!FOR DEVELOPERS:
+!FOR DEVELOPERS ONLY:
+! # The base SCAN method as well as the concrete container constructors need to update
+!   the reference count in the corresponding container element (in use). An element
+!   of a container is considered IN USE if either it is a boundary element of some
+!   container/iterator or it is associated with the current position of some
+!   iterator or it is explicitly locked via the .in_use(errc,.TRUE.) method.
+!   If the element of a container is IN USE, it cannot be deleted.
 ! # Inconsistency: When multiple iterators are associated with the same container,
 !   a deletion of a container element via one of the iterators may result in an
 !   undefined value for the boundary and/or current pointer in another iterator
@@ -111,6 +64,7 @@
         integer(INTD), parameter:: GFC_ELEM_NOT_EMPTY=-8    !element of the container is not empty
         integer(INTD), parameter:: GFC_ACTION_FAILED=-9     !user-defined action failed on an element
         integer(INTD), parameter:: GFC_METHOD_UNDEFINED=-10 !undefined method called on an object
+        integer(INTD), parameter:: GFC_IN_USE=-11           !object is in use by others
  !Predicates (GFC_ERROR applies here as well):
         integer(INTD), parameter:: GFC_TRUE=1  !TRUE value
         integer(INTD), parameter:: GFC_FALSE=0 !FALSE value
@@ -125,7 +79,7 @@
         integer(INTD), parameter:: GFC_IT_NULL=1000   !uninitialized iterator
         integer(INTD), parameter:: GFC_IT_EMPTY=1001  !empty initialized iterator
         integer(INTD), parameter:: GFC_IT_ACTIVE=1002 !active (non-empty) iterator
-        integer(INTD), parameter:: GFC_IT_DONE=1003   !pass the end of the container (done)
+        integer(INTD), parameter:: GFC_IT_DONE=1003   !pass the end of the container (done), needs to be reset to continue
         integer(INTD), parameter:: GFC_NO_MOVE=1004   !no move possible (for custom moves)
 !TYPES:
  !Element of a container:
@@ -133,7 +87,8 @@
          class(*), pointer, private:: value_p=>NULL() !element value (data): either associated (by reference) or allocated (by value)
          integer(INTD), private:: alloc=GFC_FALSE     !GFC_FALSE: value is stored by reference or null; GFC_TRUE: value is stored by value
 #ifndef NO_OMP
-         integer(omp_lock_kind), private:: lock       !update lock (for concurrent updates)
+         integer(INTD), private:: ref_count=0 !reference count (incremented when the container boundary or an iterator point to the element)
+         integer(INTD), private:: lock=0      !update lock (for concurrent updates): Can be set by user to ensure an exclusive access
 #endif
          contains
           procedure, public:: construct=>ContElemConstruct !constructs a new container element, either by reference or by value
@@ -144,34 +99,43 @@
           procedure, public:: action=>ContElemAction       !acts on the element with a user-defined action
           procedure, public:: compare=>ContElemCompare     !compares the value of the element with the value of another element
           procedure, public:: print_it=>ContElemPrintIt    !prints the value of the element with a user-defined print function
+          procedure, public:: in_use=>ContElemInUse        !returns TRUE if the element of the container is currently in use, hence cannot be deleted
+          procedure, public:: release_lock_=>ContElemReleaseLock !PRIVATE: releases the lock on the container element
+          procedure, public:: incr_ref_=>ContElemIncrRef   !PRIVATE: increments the reference count for the container element
+          procedure, public:: decr_ref_=>ContElemDecrRef   !PRIVATE: decrements the reference count for the container element
         end type gfc_cont_elem_t
  !Base container:
         type, abstract, public:: gfc_container_t
          integer(INTL), private:: volume=0_INTL !volume of the container (total number of elements when quick counting is on), -1 means quick counting is off
          contains
-          procedure, non_overridable, public:: num_elems_=>ContNumElems !returns the total number of elements in the container (INTERNAL)
-          procedure, non_overridable, public:: update_num_elems_=>ContUpdateNumElems !updates the number of elements (INTERNAL)
-          procedure, non_overridable, public:: quick_counting_off_=>ContQuickCountingOff !turns off quick element counting (INTERNAL)
+          procedure, non_overridable, public:: num_elems_=>ContNumElems !PRIVATE: returns the total number of elements in the container
+          procedure, non_overridable, public:: update_num_elems_=>ContUpdateNumElems !PRIVATE: updates the number of elements
+          procedure, non_overridable, public:: quick_counting_off_=>ContQuickCountingOff !PRIVATE: turns off quick element counting
         end type gfc_container_t
  !Base iterator:
         type, abstract, public:: gfc_iter_t
-         integer(INTD), private:: state=GFC_IT_NULL !current state of the iterator
+         integer(INTD), private:: state=GFC_IT_NULL !current state of the iterator (see possible iterator states above)
          integer(INTL), private:: tot_count=0_INTL  !total number of iterations after the last reset
-         integer(INTL), private:: pred_count=0_INTL !number of iterations with TRUE predicate after the last reset
+         integer(INTL), private:: pred_count=0_INTL !number of iterations with a TRUE predicate after the last reset
          contains
           procedure, non_overridable, public:: get_status=>IterGetStatus  !returns the status of the iterator
-          procedure, non_overridable, public:: set_status_=>IterSetStatus !sets the status of the iterator (INTERNAL)
+          procedure, non_overridable, public:: set_status_=>IterSetStatus !PRIVATE: sets the status of the iterator
           procedure, public:: reset_count=>IterResetCount                 !resets all iteration counters to zero
           procedure, public:: total_count=>IterTotalCount                 !returns the total iteration count since the last reset
-          procedure, public:: predicated_count=>IterPredicatedCount       !returns the predicated iteration count since the last reset
+          procedure, public:: predicated_count=>IterPredicatedCount       !returns the TRUE predicated iteration count since the last reset
           procedure, public:: scan=>IterScan                              !traverses the container with an optional action
-          procedure(gfc_it_init_i), deferred, public:: init       !initializes the iterator (associates it with a container and sets it to the root)
+          procedure(gfc_it_init_i), deferred, public:: init       !initializes the iterator (associates it with a container and positions it on the root)
           procedure(gfc_it_reset_i), deferred, public:: reset     !resets the iterator to the beginning (root element)
           procedure(gfc_it_reset_i), deferred, public:: release   !dissociates the iterator from its container
           procedure(gfc_it_pointee_i), deferred, public:: pointee !returns the element currently pointed to
           procedure(gfc_it_next_i), deferred, public:: next       !proceeds to the next element of the container
           procedure(gfc_it_next_i), deferred, public:: previous   !proceeds to the previous element of the container
         end type gfc_iter_t
+ !Base functor:
+        type, abstract, public:: gfc_func_t
+         contains
+          procedure(gfc_func_act_i), deferred, public:: act !performs an action on an unlimited polymorphic object
+        end type gfc_func_t
 !ABSTRACT INTERFACES:
         abstract interface
  !Generics:
@@ -195,7 +159,7 @@
           class(*), intent(in):: obj                  !in: original object
           integer(INTD), intent(out), optional:: ierr !out: error code (0:success)
          end function gfc_copy_i
-  !GFC generic destructor:
+  !GFC generic destructor (destructs the inner state of an object, but does not DEALLOCATE the object):
          function gfc_destruct_i(obj) result(ierr)
           import:: INTD
           integer(INTD):: ierr          !out: error code (0:success)
@@ -218,30 +182,37 @@
   !Deferred: GFC iterator: .init:
          function gfc_it_init_i(this,cont) result(ierr)
           import:: gfc_iter_t,gfc_container_t,INTD
-          integer(INTD):: ierr                              !error code
-          class(gfc_iter_t), intent(inout):: this           !GFC iterator
-          class(gfc_container_t), target, intent(in):: cont !GFC container
+          integer(INTD):: ierr                              !out: error code
+          class(gfc_iter_t), intent(inout):: this           !inout: GFC iterator
+          class(gfc_container_t), target, intent(in):: cont !in: GFC container
          end function gfc_it_init_i
   !Deferred: GFC iterator: .reset .release:
          function gfc_it_reset_i(this) result(ierr)
           import:: gfc_iter_t,INTD
-          integer(INTD):: ierr                    !error code
-          class(gfc_iter_t), intent(inout):: this !iterator
+          integer(INTD):: ierr                    !out: error code
+          class(gfc_iter_t), intent(inout):: this !inout: GFC iterator
          end function gfc_it_reset_i
   !Deferred: GFC iterator: .pointee:
          function gfc_it_pointee_i(this,ierr) result(pntee)
           import:: gfc_iter_t,gfc_cont_elem_t,INTD
-          class(gfc_cont_elem_t), pointer:: pntee     !container element currently pointed to by the iterator
-          class(gfc_iter_t), intent(in):: this        !iterator
-          integer(INTD), intent(out), optional:: ierr !error code
+          class(gfc_cont_elem_t), pointer:: pntee     !out: container element currently pointed to by the iterator
+          class(gfc_iter_t), intent(in):: this        !in: GFC iterator
+          integer(INTD), intent(out), optional:: ierr !out: error code
          end function gfc_it_pointee_i
   !Deferred: GFC iterator: .next .previous:
          function gfc_it_next_i(this,elem_p) result(ierr)
           import:: gfc_iter_t,gfc_cont_elem_t,INTD
-          integer(INTD):: ierr                                            !error code
-          class(gfc_iter_t), intent(inout):: this                         !GFC iterator
-          class(gfc_cont_elem_t), pointer, intent(out), optional:: elem_p !pointer to the container element
+          integer(INTD):: ierr                                            !out: error code
+          class(gfc_iter_t), intent(inout):: this                         !inout: GFC iterator
+          class(gfc_cont_elem_t), pointer, intent(out), optional:: elem_p !out: pointer to the container element
          end function gfc_it_next_i
+  !Deferred: GFC functor action: .act:
+         function gfc_func_act_i(this,obj) result(ierr)
+          import:: gfc_func_t,INTD
+          integer(INTD):: ierr                    !out: error code
+          class(gfc_func_t), intent(inout):: this !inout: GFC functor (may change its state)
+          class(*), intent(inout):: obj           !inout: arbitrary object the functor is acting upon
+         end function gfc_func_act_i
         end interface
 !VISIBILITY:
         private ContElemConstruct
@@ -270,7 +241,7 @@
 #else
         subroutine ContElemConstruct(this,obj,ierr,assoc_only)
 #endif
-!Constructs an element of a container (fills in its contents).
+!Constructs an element of a container (fills in its content).
          implicit none
          class(gfc_cont_elem_t), intent(inout):: this !inout: element of a container
          class(*), target, intent(in):: obj           !in: value to be stored in this element
@@ -286,25 +257,36 @@
          errc=GFC_SUCCESS
          if(present(assoc_only)) then; assoc=assoc_only; else; assoc=.false.; endif
          if(this%is_empty()) then
-          if(assoc) then
-           this%value_p=>obj
-           this%alloc=GFC_FALSE
-          else
-#ifdef NO_GNU
-           if(present(copy_constr_func)) then
-            this%value_p=>copy_constr_func(obj,errc)
-           else
-#endif
-            allocate(this%value_p,SOURCE=obj,STAT=errcode)
-            if(errcode.ne.0) errc=GFC_MEM_ALLOC_FAILED
-#ifdef NO_GNU
-           endif
-#endif
+          if(this%in_use(errc,set_lock=.TRUE.,report_refs=.TRUE.).eq.GFC_FALSE) then
            if(errc.eq.GFC_SUCCESS) then
-            this%alloc=GFC_TRUE
-           else
-            this%value_p=>NULL(); errc=GFC_MEM_ALLOC_FAILED
+            if(assoc) then
+             this%value_p=>obj
+             this%alloc=GFC_FALSE
+            else
+#ifdef NO_GNU
+             if(present(copy_constr_func)) then
+              this%value_p=>copy_constr_func(obj,errc)
+             else
+#endif
+              allocate(this%value_p,SOURCE=obj,STAT=errcode)
+              if(errcode.ne.0) errc=GFC_MEM_ALLOC_FAILED
+#ifdef NO_GNU
+             endif
+#endif
+             if(errc.eq.GFC_SUCCESS) then
+              this%alloc=GFC_TRUE
+             else
+              this%value_p=>NULL(); errc=GFC_MEM_ALLOC_FAILED
+             endif
+            endif
            endif
+           if(errc.eq.GFC_SUCCESS) then
+            call this%release_lock_(errc)
+           else
+            call this%release_lock_()
+           endif
+          else
+           if(errc.eq.GFC_SUCCESS) errc=GFC_IN_USE
           endif
          else
           errc=GFC_ELEM_NOT_EMPTY
@@ -321,19 +303,31 @@
          class(gfc_cont_elem_t), intent(inout):: this     !inout: element of a container
          integer(INTD), intent(out), optional:: ierr      !out: error code (0:success)
          procedure(gfc_destruct_i), optional:: destructor !in: explicit destructor for the value of this element (for allocated only)
-         integer:: errc
+         integer(INTD):: errc
+         integer:: errcode
 
          errc=GFC_SUCCESS
          if(.not.this%is_empty()) then
-          if(this%alloc.eq.GFC_TRUE) then
-           if(present(destructor)) then
-            errc=destructor(this%value_p)
-            if(errc.ne.0) errc=GFC_MEM_FREE_FAILED
+          if(this%in_use(errc,set_lock=.TRUE.,report_refs=.TRUE.).eq.GFC_FALSE) then
+           if(errc.eq.GFC_SUCCESS) then
+            if(this%alloc.eq.GFC_TRUE) then
+             if(present(destructor)) then
+              errc=destructor(this%value_p)
+              if(errc.ne.0) errc=GFC_MEM_FREE_FAILED
+             endif
+             deallocate(this%value_p,STAT=errcode); if(errcode.ne.0) errc=GFC_MEM_FREE_FAILED
+            endif
+            this%value_p=>NULL()
+            this%alloc=GFC_FALSE
            endif
-           deallocate(this%value_p,STAT=errc); if(errc.ne.0) errc=GFC_MEM_FREE_FAILED
+           if(errc.eq.GFC_SUCCESS) then
+            call this%release_lock_(errc)
+           else
+            call this%release_lock_()
+           endif
+          else
+           if(errc.eq.GFC_SUCCESS) errc=GFC_IN_USE
           endif
-          this%value_p=>NULL()
-          this%alloc=GFC_FALSE
          else
           errc=GFC_ELEM_EMPTY
          endif
@@ -342,7 +336,7 @@
         end subroutine ContElemDestruct
 !---------------------------------------------------------
         function ContElemGetValue(this,ierr) result(val_p)
-!Returns a pointer to the element value.
+!Returns an unlimited polymorphic pointer to the element value.
          implicit none
          class(*), pointer:: val_p                   !out: pointer to the element value
          class(gfc_cont_elem_t), intent(in):: this   !in: element of a container
@@ -390,7 +384,8 @@
         end function ContElemPredicate
 !----------------------------------------------------
         subroutine ContElemAction(this,act_func,ierr)
-!Performs a user-defined action on a given element of a container.
+!Performs a user-defined action on the value of a given element of a container.
+!It is the user responsibility to avoid race conditions when updating container element values!
          implicit none
          class(gfc_cont_elem_t), intent(inout):: this !inout: element of a container
          procedure(gfc_action_i):: act_func           !in: user-defined action
@@ -408,8 +403,8 @@
         end subroutine ContElemAction
 !---------------------------------------------------------------------------
         function ContElemCompare(this,other_value,cmp_func,ierr) result(cmp)
-!Compares the value of a given container element with another value
-!using an appropriate comparison function.
+!Compares the value of a given container element (on the left) with another
+!value (on the right) using an appropriate comparison function.
          implicit none
          integer(INTD):: cmp                         !out: result of the comparison (see GFC_CMP_XXX above)
          class(gfc_cont_elem_t), intent(in):: this   !in: element of a container whose value is being compared
@@ -429,7 +424,7 @@
         end function ContElemCompare
 !--------------------------------------------------------------
         subroutine ContElemPrintIt(this,print_func,ierr,dev_id)
-!Prints the given element of a container.
+!Prints the given element of a container using a user-defined print function.
          implicit none
          class(gfc_cont_elem_t), intent(in):: this    !in: element of a container
          procedure(gfc_print_i):: print_func          !in: appropriate printing function
@@ -448,8 +443,106 @@
          if(present(ierr)) ierr=errc
          return
         end subroutine ContElemPrintIt
+!----------------------------------------------------------------------------
+        function ContElemInUse(this,ierr,set_lock,report_refs) result(in_use)
+!Returns GFC_TRUE if the element of the container is currently in use,
+!hence cannot be deleted. The element of the container is considered
+!IN USE if it is currently locked. Additionally, if <report_refs> = TRUE,
+!an element of a container is considered IN USE if it is a boundary element
+!of some container or it is associated with the current iterator position in
+!some iterator. If the element of the container is not in use,
+!a status GFC_FALSE is returned. In the latter case, setting <set_lock> to TRUE
+!will set the lock, thus providing an exclusive access to the container element.
+         implicit none
+         integer(INTD):: in_use                       !out: GFC_TRUE, GFC_FALSE, or some other (error) status
+         class(gfc_cont_elem_t), intent(inout):: this !inout: element of the container
+         integer(INTD), intent(out), optional:: ierr  !out: error code
+         logical, intent(in), optional:: set_lock     !in: if TRUE and the element is not in use, the lock will be set (default FALSE)
+         logical, intent(in), optional:: report_refs  !in: if TRUE, being referred to by an iterator is considered IN USE as well (default FALSE)
+         integer(INTD):: errc
+         logical:: refs
+
+         errc=GFC_SUCCESS
+#ifndef NO_OMP
+         in_use=GFC_TRUE
+         if(present(report_refs)) then; refs=report_refs; else; refs=.FALSE.; endif
+!$OMP CRITICAL (GFC_LOCK)
+         if(this%lock.eq.0) then
+          if((.not.refs).or.this%ref_count.eq.0) then
+           in_use=GFC_FALSE
+           if(present(set_lock)) then
+            if(set_lock) this%lock=1
+           endif
+          endif
+         endif
+!$OMP END CRITICAL (GFC_LOCK)
+#else
+         in_use=GFC_FALSE
+#endif
+         if(present(ierr)) ierr=errc
+         return
+        end function ContElemInUse
+!------------------------------------------------
+        subroutine ContElemReleaseLock(this,ierr) !INTERNAL USE ONLY
+!Releases the lock in a container element.
+         implicit none
+         class(gfc_cont_elem_t), intent(inout):: this !inout: element of the container
+         integer(INTD), intent(out), optional:: ierr  !out: error code
+         integer(INTD):: errc
+
+         errc=GFC_SUCCESS
+#ifndef NO_OMP
+!$OMP CRITICAL (GFC_LOCK)
+         this%lock=0
+!$OMP END CRITICAL (GFC_LOCK)
+#endif
+         if(present(ierr)) ierr=errc
+         return
+        end subroutine ContElemReleaseLock
+!--------------------------------------------
+        subroutine ContElemIncrRef(this,ierr) !INTERNAL USE ONLY!
+!Increments the reference count.
+         implicit none
+         class(gfc_cont_elem_t), intent(inout):: this !inout: container element
+         integer(INTD), intent(out), optional:: ierr  !out: error code
+         integer(INTD):: errc
+
+         errc=GFC_SUCCESS
+#ifndef NO_OMP
+!$OMP CRITICAL (GFC_LOCK)
+         if(this%ref_count.ge.0) then
+          this%ref_count=this%ref_count+1
+         else
+          errc=GFC_CORRUPTED_CONT
+         endif
+!$OMP END CRITICAL (GFC_LOCK)
+#endif
+         if(present(ierr)) ierr=errc
+         return
+        end subroutine ContElemIncrRef
+!--------------------------------------------
+        subroutine ContElemDecrRef(this,ierr) !INTERNAL USE ONLY!
+!Decrements the reference count.
+         implicit none
+         class(gfc_cont_elem_t), intent(inout):: this !inout: container element
+         integer(INTD), intent(out), optional:: ierr  !out: error code
+         integer(INTD):: errc
+
+         errc=GFC_SUCCESS
+#ifndef NO_OMP
+!$OMP CRITICAL (GFC_LOCK)
+         if(this%ref_count.gt.0) then
+          this%ref_count=this%ref_count-1
+         else
+          errc=GFC_CORRUPTED_CONT
+         endif
+!$OMP END CRITICAL (GFC_LOCK)
+#endif
+         if(present(ierr)) ierr=errc
+         return
+        end subroutine ContElemDecrRef
 !------------------------------------------------------
-        function ContNumElems(this,ierr) result(nelems)
+        function ContNumElems(this,ierr) result(nelems) !INTERNAL USE ONLY!
 !Returns the total number of elements stored in the container,
 !unless quick counting has been deactivated (returns -1 then).
          implicit none
@@ -462,7 +555,7 @@
          if(this%volume.ge.0) then
           nelems=this%volume
          else
-          nelems=-1
+          nelems=-1; errc=GFC_METHOD_UNDEFINED
           !`Count somehow else (quick counting deactivated)
          endif
          if(present(ierr)) ierr=errc
@@ -488,7 +581,7 @@
            errc=GFC_INVALID_ARGS
           endif
          else
-          nelems=-1 !quick counting deactivated
+          nelems=-1; errc=GFC_METHOD_UNDEFINED !quick counting deactivated
          endif
          if(present(ierr)) ierr=errc
          return
