@@ -94,13 +94,13 @@ LIB_GNU = -L.
 LIB_PGI = -L.
 LIB_INTEL = -L.
 LIB_CRAY = -L.
-LIB_IBM = -L.
+LIB_IBM = -L. -lxlsmp
 LIB_NOWRAP = $(LIB_$(TOOLKIT))
 LIB_WRAP = -L.
 ifeq ($(TOOLKIT),PGI)
  LIB = $(LIB_$(WRAP))
 else
- LIB = $(LIB_$(WRAP)) -lstdc++
+ LIB = $(LIB_$(WRAP))
 endif
 
 #MPI INCLUDES:
