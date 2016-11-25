@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Tree
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2016-09-21 (started 2016-02-17)
+!REVISION: 2016-11-22 (started 2016-02-17)
 
 !Copyright (C) 2014-2016 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2016 Oak Ridge National Laboratory (UT-Battelle)
@@ -30,6 +30,8 @@
 !   via its own iterator or via the combined tree iterator. Multiple
 !   iterators can be associated with a tree at the same time.
 
+!FOR DEVELOPERS ONLY:
+
        module gfc_tree
         use gfc_base
         use timers
@@ -54,6 +56,7 @@
          class(tree_vertex_t), pointer, private:: first_child=>NULL()  !link to the first child vertex
          integer(INTL), private:: num_child=0                          !total number of children vertices
          contains
+          procedure, public:: construct=>TreeVertexConstruct                         !constructs the content of a tree vertex
           procedure, non_overridable, public:: num_children=>TreeVertexNumChildren   !returns the total number of children
           procedure, non_overridable, public:: num_siblings=>TreeVertexNumSiblings   !returns the total number of siblings
           procedure, non_overridable, public:: first_sibling=>TreeVertexFirstSibling !returns GFC_TRUE if the vertex is the first in the sibling (ring) list
@@ -91,6 +94,7 @@
 !GLOBAL DATA:
 !VISIBILITY:
  !Procedures:
+        private TreeVertexConstruct
         private TreeVertexNumChildren
         private TreeVertexNumSiblings
         private TreeVertexFirstSibling
@@ -116,6 +120,43 @@
 
        contains
 !IMPLEMENTATION:
+!---------------------------------------------------------------------------
+#ifdef NO_GNU
+        subroutine TreeVertexConstruct(this,obj,ierr,assoc_only,copy_ctor_f) !`GCC has a bug with this line
+#else
+        subroutine TreeVertexConstruct(this,obj,ierr,assoc_only)
+#endif
+!Constructs the content of the tree vertex.
+         implicit none
+         class(tree_vertex_t), intent(inout):: this    !inout: tree vertex
+         class(*), target, intent(in):: obj            !in: assigned value
+         integer(INTD), intent(out), optional:: ierr   !out: error code
+         logical, intent(in), optional:: assoc_only    !in: if TRUE, the value will be assigned by reference, otherwise by value (allocated): Defaults to FALSE
+#ifdef NO_GNU
+         procedure(gfc_copy_i), optional:: copy_ctor_f !in: generic copy constructor
+#endif
+         integer(INTD):: errc
+
+#ifdef NO_GNU
+         if(present(copy_ctor_f)) then
+          if(present(assoc_only)) then
+           call this%construct_base(obj,errc,assoc_only,copy_ctor_f)
+          else
+           call this%construct_base(obj,errc,copy_ctor_f=copy_ctor_f)
+          endif
+         else
+#endif
+          if(present(assoc_only)) then
+           call this%construct_base(obj,errc,assoc_only=assoc_only)
+          else
+           call this%construct_base(obj,errc)
+          endif
+#ifdef NO_GNU
+         endif
+#endif
+         if(present(ierr)) ierr=errc
+         return
+        end subroutine TreeVertexConstruct
 !---------------------------------------------------------------
         function TreeVertexNumChildren(this,ierr) result(nchild)
 !Returns the total number of children attached to the tree vertex.
@@ -295,7 +336,7 @@
         function TreeIterNext(this,elem_p) result(ierr)
 !If <elem_p> is absent, the iterator moves to the next element, if any.
 !If <elem_p> is present, the iterator simply returns the next element in <elem_p> without moving.
-!Complexity: O(1)...O(N). No additional memory is used.
+!Complexity: O(1)...O(N), O(N) moving cost may occur in unbalanced trees. No additional memory is used.
          implicit none
          integer(INTD):: ierr                                            !out: error code (0:success)
          class(tree_iter_t), intent(inout):: this                        !inout: iterator
@@ -344,29 +385,28 @@
         function TreeIterPrevious(this,elem_p) result(ierr)
 !If <elem_p> is absent, the iterator moves to the previous element, if any.
 !If <elem_p> is present, the iterator simply returns the previous element in <elem_p> without moving.
-!Complexity: O(1)..O(N). No additional memory is used.
+!Complexity: O(1)..O(N), O(N) moving cost may occur in unbalanced trees. No additional memory is used.
          implicit none
          integer(INTD):: ierr                                            !out: error code (0:success)
          class(tree_iter_t), intent(inout):: this                        !inout: iterator
          class(gfc_cont_elem_t), pointer, intent(out), optional:: elem_p !out: pointer to the container element
          class(tree_vertex_t), pointer:: tvp
-         logical:: on_root
 
          ierr=this%get_status()
          if(ierr.eq.GFC_IT_ACTIVE) then
           if(associated(this%current)) then
            ierr=GFC_SUCCESS
-           tvp=>this%current; on_root=associated(tvp,this%container%root)
-           if((.not.on_root).and.tvp%first_sibling().eq.GFC_TRUE) then
-            tvp=>tvp%parent
+           if(associated(this%current,this%container%root)) then !nothing precedes the root
+            tvp=>NULL()
            else
-            if(.not.on_root) tvp=>tvp%prev_sibling
-            if((.not.on_root).or.associated(tvp%first_child)) then
+            tvp=>this%current
+            if(tvp%first_sibling().eq.GFC_TRUE) then
+             tvp=>tvp%parent
+            else
+             tvp=>tvp%prev_sibling
              do while(associated(tvp%first_child))
               tvp=>tvp%first_child%prev_sibling !last sibling among the children (because of ring linking)
              enddo
-            else
-             tvp=>NULL()
             endif
            endif
            if(present(elem_p)) then
