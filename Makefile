@@ -6,7 +6,7 @@ export WRAP ?= NOWRAP
 #Compiler: [GNU|PGI|INTEL|CRAY|IBM]:
 export TOOLKIT ?= GNU
 #Optimization: [DEV|OPT]:
-export BUILD_TYPE ?= DEV
+export BUILD_TYPE ?= OPT
 #MPI Library: [MPICH|OPENMPI|NONE]:
 export MPILIB ?= NONE
 #BLAS: [ATLAS|MKL|ACML|NONE]:
