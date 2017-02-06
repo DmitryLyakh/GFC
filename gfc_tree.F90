@@ -1,9 +1,9 @@
 !Generic Fortran Containers (GFC): Tree
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017-01-13 (started 2016-02-17)
+!REVISION: 2017-02-06 (started 2016-02-17)
 
-!Copyright (C) 2014-2016 Dmitry I. Lyakh (Liakh)
-!Copyright (C) 2014-2016 Oak Ridge National Laboratory (UT-Battelle)
+!Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
+!Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
 
 !This file is part of ExaTensor.
 
@@ -601,10 +601,10 @@
              if(present(copy_ctor_f)) then
               call tvp%next_sibling%construct(elem_val,ierr,assoc_only=assoc,copy_ctor_f=copy_ctor_f)
              else
+#endif
               call tvp%next_sibling%construct(elem_val,ierr,assoc_only=assoc)
+#ifdef NO_GNU
              endif
-#else
-             call tvp%next_sibling%construct(elem_val,ierr,assoc_only=assoc)
 #endif
              if(ierr.eq.GFC_SUCCESS) then
               tvp%next_sibling%prev_sibling=>tvp
@@ -623,10 +623,10 @@
              if(present(copy_ctor_f)) then
               call this%current%first_child%construct(elem_val,ierr,assoc_only=assoc,copy_ctor_f=copy_ctor_f)
              else
+#endif
               call this%current%first_child%construct(elem_val,ierr,assoc_only=assoc)
+#ifdef NO_GNU
              endif
-#else
-             call this%current%first_child%construct(elem_val,ierr,assoc_only=assoc)
 #endif
              if(ierr.eq.GFC_SUCCESS) then
               tvp=>this%current%first_child
@@ -664,10 +664,10 @@
              if(present(copy_ctor_f)) then
               call this%container%root%construct(elem_val,ierr,assoc_only=assoc,copy_ctor_f=copy_ctor_f)
              else
+#endif
               call this%container%root%construct(elem_val,ierr,assoc_only=assoc)
+#ifdef NO_GNU
              endif
-#else
-             call this%container%root%construct(elem_val,ierr,assoc_only=assoc)
 #endif
              if(ierr.eq.GFC_SUCCESS) then
               ierr=this%reset() !move to the just added first element regardless of <no_move> and change the EMPTY status to ACTIVE
@@ -1048,6 +1048,7 @@
 !Delete the tree:
          ierr=some_iter%reset(); if(ierr.ne.GFC_SUCCESS) then; ierr=10; return; endif
          ierr=some_iter%delete_subtree(some_destructor); if(ierr.ne.GFC_SUCCESS) then; ierr=11; return; endif
+         ierr=some_iter%release(); if(ierr.ne.GFC_SUCCESS) then; ierr=12; return; endif
          tm=thread_wtime(tms); perf=dble(MAX_TREE_ELEMS)/tm
          return
         end function test_gfc_tree
