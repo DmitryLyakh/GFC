@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Bi-directional linked list
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017-03-15 (started 2016-02-28)
+!REVISION: 2017-04-17 (started 2016-02-28)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -65,20 +65,22 @@
          class(list_elem_t), pointer, private:: current=>NULL() !current element of the linked list
          class(list_bi_t), pointer, private:: container=>NULL() !linked list associated with the iterator
         contains
-         procedure, public:: init=>ListIterInit                 !initializes the iterator by associating it with a list and resetting to the beginning
-         procedure, public:: reset=>ListIterReset               !resets the iterator to the beginning of the list
-         procedure, public:: reset_back=>ListIterResetBack      !resets the iterator to the end of the list
-         procedure, public:: release=>ListIterRelease           !releases the iterator (dissociates it from the container)
-         procedure, public:: pointee=>ListIterPointee           !returns the container element currently pointed to by the iterator
-         procedure, public:: next=>ListIterNext                 !moves the iterator to the next list element
-         procedure, public:: previous=>ListIterPrevious         !moves the iterator to the previous list element
-         procedure, public:: append=>ListIterAppend             !inserts a new element either at the beginning or at the end of the container
-         procedure, public:: insert_elem=>ListIterInsertElem    !inserts a new element at the current position of the container
-         procedure, public:: insert_list=>ListIterInsertList    !inserts another linked list at the current position of the container
-!        generic, public:: insert=>insert_elem,insert_list      !generic (`Ambiguous)
-         procedure, public:: split=>ListIterSplit               !splits the list into two parts at the current position
-         procedure, public:: delete=>ListIterDelete             !deletes the list element in the current position
-         procedure, public:: delete_all=>ListIterDeleteAll      !deletes all elements (either prior, or after, or all of them)
+         procedure, public:: init=>ListIterInit                   !initializes the iterator by associating it with a list and resetting to the beginning
+         procedure, public:: reset=>ListIterReset                 !resets the iterator to the beginning of the list
+         procedure, public:: reset_back=>ListIterResetBack        !resets the iterator to the end of the list
+         procedure, public:: release=>ListIterRelease             !releases the iterator (dissociates it from the container)
+         procedure, public:: pointee=>ListIterPointee             !returns the container element currently pointed to by the iterator
+         procedure, public:: next=>ListIterNext                   !moves the iterator to the next list element
+         procedure, public:: previous=>ListIterPrevious           !moves the iterator to the previous list element
+         procedure, public:: append=>ListIterAppend               !inserts a new element either at the beginning or at the end of the container
+         procedure, public:: insert_elem=>ListIterInsertElem      !inserts a new element at the current position of the container
+         procedure, public:: insert_list=>ListIterInsertList      !inserts another linked list at the current position of the container
+!        generic, public:: insert=>insert_elem,insert_list        !generic (`Ambiguous)
+         procedure, public:: split=>ListIterSplit                 !splits the list into two parts at the current position
+         procedure, public:: delete=>ListIterDelete               !deletes the list element in the current position
+         procedure, public:: delete_sublist=>ListIterDeleteSublist!deletes all elements either prior or after the current iterator position
+         procedure, public:: delete_all=>ListIterDeleteAll        !deletes all list elements
+         procedure, public:: jump_=>ListIterJump                  !PRIVATE: moves the iterator to a specified list element
         end type list_iter_t
 !INTERFACES:
 !VISIBILITY:
@@ -102,7 +104,9 @@
         private ListIterInsertList
         private ListIterSplit
         private ListIterDelete
+        private ListIterDeleteSublist
         private ListIterDeleteAll
+        private ListIterJump
 
        contains
 !IMPLEMENTATION:
@@ -334,7 +338,7 @@
             ierr=this%set_status_(GFC_IT_DONE)
             lep=>NULL()
            endif
-           if(.not.associated(lep)) then; ierr=GFC_IT_DONE; else; lep=>NULL(); endif
+           if(.not.associated(lep)) then; ierr=GFC_NO_MOVE; else; lep=>NULL(); endif
           else
            ierr=GFC_CORRUPTED_CONT
           endif
@@ -367,7 +371,7 @@
             ierr=this%set_status_(GFC_IT_DONE)
             lep=>NULL()
            endif
-           if(.not.associated(lep)) then; ierr=GFC_IT_DONE; else; lep=>NULL(); endif
+           if(.not.associated(lep)) then; ierr=GFC_NO_MOVE; else; lep=>NULL(); endif
           else
            ierr=GFC_CORRUPTED_CONT
           endif
@@ -658,7 +662,7 @@
             call this%container%quick_counting_off_() !turn off quick element counting
             call sublist%quick_counting_off_() !turn off quick element counting
            else
-            ierr=GFC_EMPTY_CONT
+            ierr=GFC_INVALID_ARGS
            endif
           else
            ierr=GFC_CORRUPTED_CONT
@@ -783,9 +787,9 @@
          endif
          return
         end function ListIterDelete
-!---------------------------------------------------------------------
-        function ListIterDeleteAll(this,dtor_f,backwards) result(ierr)
-!Deletes all elements in the list starting from the current iterator position.
+!-------------------------------------------------------------------------
+        function ListIterDeleteSublist(this,dtor_f,backwards) result(ierr)
+!Deletes all elements in the list starting from the current iterator position (either prior or after).
          implicit none
          integer(INTD):: ierr                         !out: error code (0:success)
          class(list_iter_t), intent(inout):: this     !inout: list iterator
@@ -797,6 +801,7 @@
 
          ierr=this%get_status()
          if(ierr.eq.GFC_IT_ACTIVE) then
+          ierr=GFC_SUCCESS
           if(associated(this%current)) then
            if(present(backwards)) then; back=backwards; else; back=.FALSE.; endif
            lep=>this%current
@@ -826,6 +831,47 @@
           endif
          endif
          return
+        end function ListIterDeleteSublist
+!-----------------------------------------------------------
+        function ListIterDeleteAll(this,dtor_f) result(ierr)
+!Deletes all list elements leaving it in an empty state.
+         implicit none
+         integer(INTD):: ierr                         !out: error code
+         class(list_iter_t), intent(inout):: this     !inout: list iterator
+         procedure(gfc_destruct_i), optional:: dtor_f !in: element value destructor
+
+         ierr=this%reset()
+         if(ierr.eq.GFC_SUCCESS) then
+          if(present(dtor_f)) then
+           ierr=this%delete_sublist(dtor_f)
+          else
+           ierr=this%delete_sublist()
+          endif
+          if(ierr.eq.GFC_IT_EMPTY) ierr=GFC_SUCCESS
+         endif
+         return
         end function ListIterDeleteAll
+!---------------------------------------------
+        subroutine ListIterJump(this,new_elem)
+!Moves the iterator to an arbitrary specified list element.
+         implicit none
+         class(list_iter_t), intent(inout):: this              !inout: list iterator
+         class(list_elem_t), pointer, intent(inout):: new_elem !in: pointer to the new element or NULL()
+         integer(INTD):: errc,sts
+
+         if(associated(this%current)) call this%current%decr_ref_()
+         this%current=>new_elem
+         if(associated(this%current)) then
+          call this%current%incr_ref_()
+          errc=this%set_status_(GFC_IT_ACTIVE)
+         else
+          if(this%container%is_empty().eq.GFC_TRUE) then
+           errc=this%set_status_(GFC_IT_EMPTY)
+          else
+           errc=this%set_status_(GFC_IT_DONE)
+          endif
+         endif
+         return
+        end subroutine ListIterJump
 
        end module gfc_list

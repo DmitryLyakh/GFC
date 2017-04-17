@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Base
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017-03-13 (started 2016-02-17)
+!REVISION: 2017-04-17 (started 2016-02-17)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -25,13 +25,14 @@
 !   the following aspects have to be taken into account:
 !    a) All operations on a container are done via the corresponding iterator.
 !       The iterator is the only way to access and update the container.
-!    b) The container iterator must be reset() upon addition of the first element.
-!    c) In general, an iterator may be associated with a subcontainer, that is,
+!    b) The iterator reset() method must set the proper status and reset count.
+!    c) The container iterator must be reset() upon addition of the first element.
+!    d) In general, an iterator may be associated with a subcontainer, that is,
 !       a part of a larger container carrying the same linkage topology, for example,
 !       sublist, subtree, subdictionary. Not every container class allows subcontaining.
 !       A subcontainer is linked to its host container solely via its boundary elements.
 !       A subcontainer iterator must always stay within the boundaries of its subcontainer.
-!    d) Thread safety considerations:
+!    e) Thread safety considerations:
 !       * Each iterator can only be used by one thread at a time. Multiple concurrent
 !         threads will require multiple iterators.
 !       * Structural changes in a container must be protected by GFC, including addition
@@ -43,7 +44,7 @@
 !         of the container element as a boundary or current element of an iterator will
 !         increment the reference counter, and each dissociation will decrement it.
 !       * Concurrent updates of the content of container elements must be protected
-!         by a user via the user-level lock provided for each container element.
+!         by a user via the user-level lock provided for each container element by GFC.
 !         Whenever an exclusive (write) access is required, the content of the container
 !         element should be protected by the lock which can be acquired via GFC API.
 ! # Quick counting does not work with composite containers and subcontainers
@@ -77,7 +78,8 @@
         integer(INTD), parameter:: GFC_METHOD_UNDEFINED=-10 !undefined method called on an object
         integer(INTD), parameter:: GFC_OVERFLOW=-11         !overflow
         integer(INTD), parameter:: GFC_UNKNOWN_REQUEST=-12  !unknown request
-        integer(INTD), parameter:: GFC_IN_USE=-13           !object is in use by others
+        integer(INTD), parameter:: GFC_INVALID_REQUEST=-13  !invalid request
+        integer(INTD), parameter:: GFC_IN_USE=-14           !object is in use by others
  !Predicates (GFC_ERROR applies here as well):
         integer(INTD), parameter:: GFC_TRUE=1  !TRUE value
         integer(INTD), parameter:: GFC_FALSE=0 !FALSE value
@@ -101,7 +103,8 @@
         integer(INTD), parameter:: GFC_IT_EMPTY=1001     !empty initialized iterator
         integer(INTD), parameter:: GFC_IT_ACTIVE=1002    !active (non-empty) iterator
         integer(INTD), parameter:: GFC_IT_DONE=1003      !pass the end of the container (done), needs to be reset to continue
-        integer(INTD), parameter:: GFC_NO_MOVE=1004      !no move possible (for custom moves)
+ !GFC iterator no move:
+        integer(INTD), parameter:: GFC_NO_MOVE=1004      !no move possible (for custom moves), not an iterator status!
  !GFC sorting:
         integer(INTD), parameter:: GFC_ASCEND_ORDER=+1   !ascending order
         integer(INTD), parameter:: GFC_DESCEND_ORDER=-1  !descending order
@@ -149,20 +152,20 @@
          integer(INTL), private:: tot_count=0_INTL  !total number of iterations after the last reset
          integer(INTL), private:: pred_count=0_INTL !number of iterations with a TRUE predicate after the last reset
          contains
-          procedure, non_overridable, public:: get_status=>IterGetStatus  !returns the status of the iterator
-          procedure, non_overridable, public:: set_status_=>IterSetStatus !PRIVATE: sets the status of the iterator
-          procedure, public:: get_value=>IterGetValue                     !returns a pointer to the value of the current container element
-          procedure, public:: reset_count=>IterResetCount                 !resets all iteration counters to zero
-          procedure, public:: total_count=>IterTotalCount                 !returns the total iteration count since the last reset
-          procedure, public:: predicated_count=>IterPredicatedCount       !returns the TRUE predicated iteration count since the last reset
-          procedure, public:: scanp=>IterScanProc                 !traverses the container with an optional action implemented by a procedure
-          procedure, public:: scanf=>IterScanFunc                 !traverses the container with an optional action implemented by a functor
-          procedure(gfc_it_init_i), deferred, public:: init       !initializes the iterator (associates it with a container and positions it on the root)
-          procedure(gfc_it_reset_i), deferred, public:: reset     !resets the iterator to the beginning (root element)
-          procedure(gfc_it_reset_i), deferred, public:: release   !dissociates the iterator from its container
-          procedure(gfc_it_pointee_i), deferred, public:: pointee !returns the element currently pointed to
-          procedure(gfc_it_next_i), deferred, public:: next       !proceeds to the next element of the container
-          procedure(gfc_it_next_i), deferred, public:: previous   !proceeds to the previous element of the container
+          procedure, public:: set_status_=>IterSetStatus            !PRIVATE: sets the status of the iterator
+          procedure, public:: get_status=>IterGetStatus             !returns the status of the iterator
+          procedure, public:: get_value=>IterGetValue               !returns a pointer to the value of the current container element
+          procedure, public:: reset_count=>IterResetCount           !resets all iteration counters to zero
+          procedure, public:: total_count=>IterTotalCount           !returns the total iteration count since the last reset
+          procedure, public:: predicated_count=>IterPredicatedCount !returns the TRUE predicated iteration count since the last reset
+          procedure, public:: scanp=>IterScanProc                   !traverses the container with an optional action implemented by a procedure
+          procedure, public:: scanf=>IterScanFunc                   !traverses the container with an optional action implemented by a functor
+          procedure(gfc_it_init_i), deferred, public:: init         !initializes the iterator (associates it with a container and positions it on the root)
+          procedure(gfc_it_reset_i), deferred, public:: reset       !resets the iterator to the beginning (root element)
+          procedure(gfc_it_reset_i), deferred, public:: release     !dissociates the iterator from its container
+          procedure(gfc_it_pointee_i), deferred, public:: pointee   !returns the element currently pointed to
+          procedure(gfc_it_next_i), deferred, public:: next         !proceeds to the next element of the container
+          procedure(gfc_it_next_i), deferred, public:: previous     !proceeds to the previous element of the container
         end type gfc_iter_t
  !Base predicate:
         type, abstract, public:: gfc_predicate_t
@@ -180,40 +183,40 @@
   !GFC generic predicate:
          function gfc_predicate_i(obj) result(pred)
           import:: INTD
-          integer(INTD):: pred       !out: predicate value: {GFC_TRUE, GFC_FALSE, GFC_ERROR, other integers}
-          class(*), intent(in):: obj !in: arbitrary object
+          integer(INTD):: pred               !out: predicate value: {GFC_TRUE, GFC_FALSE, GFC_ERROR, other integers}
+          class(*), intent(in), target:: obj !in: arbitrary object
          end function gfc_predicate_i
   !GFC generic relation:
          function gfc_cmp_i(obj1,obj2) result(cmp)
           import:: INTD
-          integer(INTD):: cmp         !out: result of the comparison (relation): See CMP parameters above
-          class(*), intent(in):: obj1 !in: object 1
-          class(*), intent(in):: obj2 !in: object 2
+          integer(INTD):: cmp                 !out: result of the comparison (relation): See CMP parameters above
+          class(*), intent(in), target:: obj1 !in: object 1
+          class(*), intent(in), target:: obj2 !in: object 2
          end function gfc_cmp_i
   !GFC generic copy constructor (by value):
          function gfc_copy_i(obj,ierr) result(clone)
           import:: INTD
           class(*), pointer:: clone                   !out: clone
-          class(*), intent(in):: obj                  !in: original object
+          class(*), intent(in), target:: obj          !in: original object
           integer(INTD), intent(out), optional:: ierr !out: error code (0:success)
          end function gfc_copy_i
   !GFC generic destructor (destructs the inner state of an object, but does not DEALLOCATE the object):
          function gfc_destruct_i(obj) result(ierr)
           import:: INTD
-          integer(INTD):: ierr          !out: error code (0:success)
-          class(*), intent(inout):: obj !inout: object for destruction
+          integer(INTD):: ierr                  !out: error code (0:success)
+          class(*), intent(inout), target:: obj !inout: object for destruction
          end function gfc_destruct_i
   !GFC generic action:
          function gfc_action_i(obj) result(ierr)
           import:: INTD
-          integer(INTD):: ierr          !out: error code (0:success)
-          class(*), intent(inout):: obj !inout: object to be acted on
+          integer(INTD):: ierr                  !out: error code (0:success)
+          class(*), intent(inout), target:: obj !inout: object to be acted on
          end function gfc_action_i
   !GFC generic printing:
          function gfc_print_i(obj,dev_id) result(ierr)
           import:: INTD
           integer(INTD):: ierr                         !out: error code (0:success)
-          class(*), intent(in):: obj                   !in: arbitrary object
+          class(*), intent(in), target:: obj           !in: arbitrary object
           integer(INTD), intent(in), optional:: dev_id !in: output device id (defaults to screen: 6)
          end function gfc_print_i
  !Deferred:
@@ -255,14 +258,14 @@
           import:: gfc_predicate_t,INTD
           integer(INTD):: res                          !out: result {GFC_TRUE,GFC_FALSE,GFC_ERROR}
           class(gfc_predicate_t), intent(inout):: this !inout: predicate object (may change its state!)
-          class(*), intent(in):: obj                   !in: object on which the predicate is evaluated
+          class(*), intent(in), target:: obj           !in: object on which the predicate is evaluated
          end function gfc_pred_obj_i
   !Deferred: GFC functor action: .act:
          function gfc_func_act_i(this,obj) result(ierr)
           import:: gfc_functor_t,INTD
           integer(INTD):: ierr                       !out: error code
           class(gfc_functor_t), intent(inout):: this !inout: GFC functor (may change its state!)
-          class(*), intent(inout):: obj              !inout: arbitrary object the functor is acting upon
+          class(*), intent(inout), target:: obj      !inout: arbitrary object the functor is acting upon
          end function gfc_func_act_i
         end interface
 !VISIBILITY:
@@ -280,8 +283,8 @@
         private ContNumElems
         private ContUpdateNumElems
         private ContQuickCountingOff
-        private IterGetStatus
         private IterSetStatus
+        private IterGetStatus
         private IterGetValue
         private IterResetCount
         private IterTotalCount
@@ -312,6 +315,7 @@
          integer(INTD):: errc
          integer:: errcode
          logical:: assoc,lckd,lck
+         character(256):: errmesg
 
          errc=GFC_SUCCESS
          if(present(assoc_only)) then; assoc=assoc_only; else; assoc=.FALSE.; endif
@@ -329,8 +333,16 @@
               this%value_p=>copy_ctor_f(obj,errc)
              else
 #endif
-              allocate(this%value_p,SOURCE=obj,STAT=errcode)
-              if(errcode.ne.0) errc=GFC_MEM_ALLOC_FAILED
+              !print *,'VALUE_P allocation status = ',associated(this%value_p) !debug
+              allocate(this%value_p,SOURCE=obj,STAT=errcode,ERRMSG=errmesg)
+              if(errcode.ne.0) then
+               write(*,*)'#ERROR(GFC::base:ContElemConstruct): allocate() failed: '//errmesg
+               if(errmesg(1:39).eq.'Attempt to allocate an allocated object') then !debug
+                deallocate(this%value_p,STAT=errcode,ERRMSG=errmesg) !debug
+                if(errcode.ne.0) print *,'deallocate() failure: '//errmesg !debug
+               endif !debug
+               errc=GFC_MEM_ALLOC_FAILED
+              endif
 #ifdef NO_GNU
              endif
 #endif
@@ -747,20 +759,6 @@
          return
         end subroutine ContQuickCountingOff
 !----------------------------------------------------
-        function IterGetStatus(this,ierr) result(sts)
-!Returns the status of the iterator.
-         implicit none
-         integer(INTD):: sts                         !out: current status of the iterator
-         class(gfc_iter_t), intent(in):: this        !in: iterator
-         integer(INTD), intent(out), optional:: ierr !out: error code (0:success)
-         integer(INTD):: errc
-
-         errc=GFC_SUCCESS
-         sts=this%state
-         if(present(ierr)) ierr=errc
-         return
-        end function IterGetStatus
-!----------------------------------------------------
         function IterSetStatus(this,sts) result(ierr) !INTERNAL USE ONLY!
 !Sets the status of the iterator.
          implicit none
@@ -777,6 +775,20 @@
          end select
          return
         end function IterSetStatus
+!----------------------------------------------------
+        function IterGetStatus(this,ierr) result(sts)
+!Returns the status of the iterator.
+         implicit none
+         integer(INTD):: sts                         !out: current status of the iterator
+         class(gfc_iter_t), intent(in):: this        !in: iterator
+         integer(INTD), intent(out), optional:: ierr !out: error code (0:success)
+         integer(INTD):: errc
+
+         errc=GFC_SUCCESS
+         sts=this%state
+         if(present(ierr)) ierr=errc
+         return
+        end function IterGetStatus
 !-----------------------------------------------------
         function IterGetValue(this,ierr) result(val_p)
 !Returns a pointer to the value of the current container position.
@@ -787,7 +799,7 @@
          integer(INTD):: errc
          class(gfc_cont_elem_t), pointer:: gep
 
-         gep=>this%pointee(errc)
+         val_p=>NULL(); gep=>this%pointee(errc)
          if(errc.eq.GFC_SUCCESS) val_p=>gep%get_value(errc)
          if(present(ierr)) ierr=errc
          return
@@ -888,7 +900,8 @@
               if(thread_wtime(tms).gt.tml.and.moved) then; ierr=GFC_IT_ACTIVE; exit; endif !time limit exceeded (but at least one move done)
              endif
              if(bkw) then; ierr=this%previous(); else; ierr=this%next(); endif !move to the next/previous element
-             moved=.true.; skip=.false.; this%tot_count=this%tot_count+1 !register a move of the iterator
+             moved=.true.; skip=.false.
+             this%tot_count=this%tot_count+1 !register a move of the iterator
             else
              ierr=GFC_CORRUPTED_CONT
             endif
@@ -896,6 +909,7 @@
             ierr=GFC_CORRUPTED_CONT
            endif
           enddo
+          if(ierr.eq.GFC_NO_MOVE) ierr=GFC_IT_DONE
          endif
          return
         end function IterScanProc
@@ -950,7 +964,8 @@
               if(thread_wtime(tms).gt.tml.and.moved) then; ierr=GFC_IT_ACTIVE; exit; endif !time limit exceeded (but at least one move done)
              endif
              if(bkw) then; ierr=this%previous(); else; ierr=this%next(); endif !move to the next/previous element
-             moved=.true.; skip=.false.; this%tot_count=this%tot_count+1 !register a move of the iterator
+             moved=.true.; skip=.false.
+             this%tot_count=this%tot_count+1 !register a move of the iterator
             else
              ierr=GFC_CORRUPTED_CONT
             endif
@@ -958,6 +973,7 @@
             ierr=GFC_CORRUPTED_CONT
            endif
           enddo
+          if(ierr.eq.GFC_NO_MOVE) ierr=GFC_IT_DONE
          endif
          return
         end function IterScanFunc
