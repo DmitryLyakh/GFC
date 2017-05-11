@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Tree
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017-04-17 (started 2016-02-17)
+!REVISION: 2017-05-11 (started 2016-02-17)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -86,13 +86,16 @@
           procedure, public:: move_to_sibling=>TreeIterMoveToSibling!moves the iterator to the next/previous sibling, if any
           procedure, public:: move_to_child=>TreeIterMoveToChild    !moves the iterator to the first child, if any
           procedure, public:: move_to_parent=>TreeIterMoveToParent  !moves the iterator to the parent, if any
+          procedure, public:: move_up=>TreeIterMoveUp               !moves the iterator towards the root a specific number of hops
           procedure, public:: move_to_cousin=>TreeIterMoveToCousin  !moves the iterator to the next/previous cousin (within the tree level)
           procedure, public:: get_num_children=>TreeIterGetNumChildren !returns the total number of children at the current iterator position
           procedure, public:: get_num_siblings=>TreeIterGetNumSiblings !returns the total number of siblings at the current iterator position
           procedure, public:: on_first_sibling=>TreeIterOnFirstSibling !returns GFC_TRUE if positioned on the first sibling
           procedure, public:: on_last_sibling=>TreeIterOnLastSibling   !returns GFC_TRUE if positioned on the last sibling
+          procedure, public:: get_root=>TreeIterGetRoot             !returns a pointer to the tree root
           procedure, public:: get_parent=>TreeIterGetParent         !returns a pointer to the parent of the current vertex
           procedure, public:: get_child=>TreeIterGetChild           !returns a pointer to the specific child of the current vertex
+          procedure, public:: get_level=>TreeIterGetLevel           !returns the distance from the root for the current tree vertex
           procedure, public:: add_leaf=>TreeIterAddLeaf             !adds a new leaf element to the element of the container currently pointed to
           procedure, public:: delete_leaf=>TreeIterDeleteLeaf       !deletes the leaf pointed to by the iterator (if it is actually a leaf)
           procedure, public:: attach_subtree=>TreeIterAttachSubtree !attaches a subtree to the element of the container currently pointed to as the last child
@@ -124,13 +127,16 @@
         private TreeIterMoveToSibling
         private TreeIterMoveToChild
         private TreeIterMoveToParent
+        private TreeIterMoveUp
         private TreeIterMoveToCousin
         private TreeIterGetNumChildren
         private TreeIterGetNumSiblings
         private TreeIterOnFirstSibling
         private TreeIterOnLastSibling
+        private TreeIterGetRoot
         private TreeIterGetParent
         private TreeIterGetChild
+        private TreeIterGetLevel
         private TreeIterAddLeaf
         private TreeIterDeleteLeaf
         private TreeIterAttachSubtree
@@ -150,7 +156,8 @@
 !Constructs the content of the tree vertex.
          implicit none
          class(tree_vertex_t), intent(inout):: this    !inout: tree vertex
-         class(*), target, intent(in):: obj            !in: assigned value
+        !class(*), target, intent(in):: obj            !in: value to be stored
+         class(*), pointer, intent(in):: obj           !in: value to be stored
          integer(INTD), intent(out), optional:: ierr   !out: error code
          logical, intent(in), optional:: assoc_only    !in: if TRUE, the value will be assigned by reference, otherwise by value (allocated): Defaults to FALSE
 #ifdef NO_GNU
@@ -560,6 +567,27 @@
          endif
          return
         end function TreeIterMoveToParent
+!----------------------------------------------------------
+        function TreeIterMoveUp(this,num_hops) result(ierr)
+!Moves the iterator towards the root a specific number of hops.
+         implicit none
+         integer(INTD):: ierr                     !out: error code
+         class(tree_iter_t), intent(inout):: this !inout: tree iterator
+         integer(INTD), intent(in):: num_hops     !in: number of hops to move
+         integer(INTD):: n
+
+         ierr=GFC_SUCCESS
+         if(num_hops.ge.0) then
+          n=num_hops
+          do while(n.gt.0)
+           ierr=this%move_to_parent(); if(ierr.ne.GFC_SUCCESS) exit
+           n=n-1
+          enddo
+         else
+          ierr=GFC_INVALID_ARGS
+         endif
+         return
+        end function TreeIterMoveUp
 !-------------------------------------------------------------------
         function TreeIterMoveToCousin(this,to_previous) result(ierr)
 !Moves the iterator either to the next or to the previous cousin.
@@ -655,7 +683,7 @@
          if(present(ierr)) ierr=errc
          return
         end function TreeIterOnFirstSibling
-!----------------------------------------------------------
+!------------------------------------------------------------
         function TreeIterOnLastSibling(this,ierr) result(res)
 !Returns GFC_TRUE if the iterator is positioned on the last sibling.
          implicit none
@@ -671,6 +699,27 @@
          if(present(ierr)) ierr=errc
          return
         end function TreeIterOnLastSibling
+!-------------------------------------------------------
+        function TreeIterGetRoot(this,ierr) result(root)
+!Returns a pointer to the tree root.
+         implicit none
+         class(gfc_cont_elem_t), pointer:: root      !out: pointer to the tree root
+         class(tree_iter_t), intent(in):: this       !in: iterator
+         integer(INTD), intent(out), optional:: ierr !out: error code
+         integer(INTD):: errc
+
+         root=>NULL(); errc=this%get_status()
+         if(errc.eq.GFC_IT_ACTIVE.or.errc.eq.GFC_IT_DONE) then
+          if(associated(this%container)) then
+           errc=GFC_SUCCESS; root=>this%container%root
+           if(.not.associated(root)) errc=GFC_CORRUPTED_CONT
+          else
+           errc=GFC_CORRUPTED_CONT
+          endif
+         endif
+         if(present(ierr)) ierr=errc
+         return
+        end function TreeIterGetRoot
 !-----------------------------------------------------------
         function TreeIterGetParent(this,ierr) result(parent)
 !Returns a pointer to the parent of the current vertex.
@@ -704,7 +753,7 @@
          integer(INTD):: errc,n
          class(tree_vertex_t), pointer:: tvp
 
-         errc=this%get_status(); child=>NULL()
+         child=>NULL(); errc=this%get_status()
          if(errc.eq.GFC_IT_ACTIVE) then
           errc=GFC_SUCCESS
           if(associated(this%current)) then
@@ -751,6 +800,29 @@
          if(present(ierr)) ierr=errc
          return
         end function TreeIterGetChild
+!---------------------------------------------------------
+        function TreeIterGetLevel(this,ierr) result(level)
+!Returns the distance from the tree root for the current tree vertex.
+         implicit none
+         integer(INTD):: level                       !out: distance from the tree root (in hops)
+         class(tree_iter_t), intent(inout):: this    !in: tree iterator
+         integer(INTD), intent(out), optional:: ierr !out: error code
+         integer(INTD):: errc
+         class(tree_vertex_t), pointer:: tvp
+
+         level=-1; errc=this%get_status()
+         if(errc.eq.GFC_IT_ACTIVE) then
+          errc=GFC_SUCCESS; tvp=>this%current
+          do while(errc.eq.GFC_SUCCESS)
+           level=level+1
+           errc=this%move_to_parent()
+          enddo
+          if(errc.eq.GFC_NO_MOVE) errc=GFC_SUCCESS
+          call this%jump_(tvp) !restore the original iterator position
+         endif
+         if(present(ierr)) ierr=errc
+         return
+        end function TreeIterGetLevel
 !------------------------------------------------------------------------------------------
 #ifdef NO_GNU
         function TreeIterAddLeaf(this,elem_val,assoc_only,no_move,copy_ctor_f) result(ierr) !`GCC/5.3.0 has a bug with this

@@ -2,7 +2,7 @@
 !The elements are initially inserted in a vector with an option to be
 !later added in a tree, thus imposing a tree relationship on them.
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017/04/17
+!REVISION: 2017/05/11
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -80,6 +80,8 @@
           procedure, public:: previous=>VecTreeIterPrevious             !moves the iterator to the previous container element (only the vector part if tree is not fully built)
           procedure, public:: get_length=>VecTreeIterGetLength          !returns the current length of the container
           procedure, public:: get_offset=>VecTreeIterGetOffset          !returns the current offset in the container
+          procedure, public:: get_level=>VecTreeIterGetLevel            !returns the distance from the tree root for the current iterator position
+          procedure, public:: get_root_id=>VecTreeIterGetRootId         !returns the offset of the tree root node
           procedure, public:: get_num_children=>VecTreeIterGetNumChildren !returns the total number of children in the current (tree) iterator position
           procedure, public:: get_num_siblings=>VecTreeIterGetNumSiblings !returns the total number of siblings in the current (tree) iterator position
           procedure, public:: on_first_sibling=>VecTreeIterOnFirstSibling !returns GFC_TRUE if tree is positioned on the first sibling
@@ -89,6 +91,7 @@
           procedure, public:: move_to_sibling=>VecTreeIterMoveToSibling !moves the iterator to the next/previous sibling of the current element in the tree
           procedure, public:: move_to_child=>VecTreeIterMoveToChild     !moves the iterator to the first child of the current element in the tree
           procedure, public:: move_to_parent=>VecTreeIterMoveToParent   !moves the iterator to the parent of the current element in the tree
+          procedure, public:: move_up=>VecTreeIterMoveUp                !moves the iterator towrards the tree root a specific number of hops
           procedure, public:: move_to_cousin=>VecTreeIterMoveToCousin   !moves the iterator to the next/previous cousin of the current element in the tree (same tree level)
           procedure, public:: append=>VecTreeIterAppend                 !appends a new element at the end of the container
           procedure, public:: add_leaf=>VecTreeIterAddLeaf              !appends a new child element to the tree vertex currently pointed to
@@ -113,6 +116,8 @@
         private VecTreeIterPrevious
         private VecTreeIterGetLength
         private VecTreeIterGetOffset
+        private VecTreeIterGetLevel
+        private VecTreeIterGetRootId
         private VecTreeIterGetNumChildren
         private VecTreeIterGetNumSiblings
         private VecTreeIterOnFirstSibling
@@ -122,6 +127,7 @@
         private VecTreeIterMoveToSibling
         private VecTreeIterMoveToChild
         private VecTreeIterMoveToParent
+        private VecTreeIterMoveUp
         private VecTreeIterMoveToCousin
         private VecTreeIterAppend
         private VecTreeIterAddLeaf
@@ -434,6 +440,43 @@
          if(present(ierr)) ierr=errc
          return
         end function VecTreeIterGetOffset
+!------------------------------------------------------------
+        function VecTreeIterGetLevel(this,ierr) result(level)
+!Returns the distance from the tree root for the current iterator position.
+         implicit none
+         integer(INTD):: level                        !out: distance from the tree root
+         class(vec_tree_iter_t), intent(inout):: this !in: vector tree iterator
+         integer(INTD), intent(out), optional:: ierr  !out: error code
+         integer(INTD):: errc
+
+         level=this%tree_it%get_level(errc)
+         if(present(ierr)) ierr=errc
+         return
+        end function VecTreeIterGetLevel
+!--------------------------------------------------------------
+        function VecTreeIterGetRootId(this,ierr) result(offset)
+!Returns the offset of the tree root node.
+         implicit none
+         integer(INTL):: offset                      !out: offset of the tree root node
+         class(vec_tree_iter_t), intent(in):: this   !in: vector tree iterator
+         integer(INTD), intent(out), optional:: ierr !out: error code
+         integer(INTD):: errc
+         class(gfc_cont_elem_t), pointer:: gep
+         class(*), pointer:: up
+
+         offset=-1_INTL; gep=>this%tree_it%get_root(errc)
+         if(errc.eq.GFC_SUCCESS.and.associated(gep)) then
+          up=>gep%get_value(errc)
+          if(errc.eq.GFC_SUCCESS) then
+           select type(up); type is(integer(INTL)); offset=up; end select
+           if(offset.lt.0_INTL) errc=GFC_CORRUPTED_CONT
+          endif
+         else
+          if(errc.eq.GFC_SUCCESS) errc=GFC_EMPTY_CONT
+         endif
+         if(present(ierr)) ierr=errc
+         return
+        end function VecTreeIterGetRootId
 !-------------------------------------------------------------------
         function VecTreeIterGetNumChildren(this,ierr) result(nchild)
 !Returns the total number of children at the current (tree) iterator position.
@@ -606,6 +649,27 @@
          call this%update_status_()
          return
         end function VecTreeIterMoveToParent
+!-------------------------------------------------------------
+        function VecTreeIterMoveUp(this,num_hops) result(ierr)
+!Moves the iterator towards the tree root a specific number of hops.
+         implicit none
+         integer(INTD):: ierr                         !out: error code
+         class(vec_tree_iter_t), intent(inout):: this !inout: vector tree iterator
+         integer(INTD), intent(in):: num_hops         !in: number of hops to move up
+         integer(INTD):: n
+
+         ierr=GFC_SUCCESS
+         if(num_hops.ge.0) then
+          n=num_hops
+          do while(n.gt.0)
+           ierr=this%move_to_parent(); if(ierr.ne.GFC_SUCCESS) exit
+           n=n-1
+          enddo
+         else
+          ierr=GFC_INVALID_ARGS
+         endif
+         return
+        end function VecTreeIterMoveUp
 !----------------------------------------------------------------------
         function VecTreeIterMoveToCousin(this,to_previous) result(ierr)
 !Moves the iterator either to the next or to the previous cousin in the tree.
