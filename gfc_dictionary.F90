@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Dictionary (ordered map), AVL BST
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017/05/11 (recycling my old dictionary implementation)
+!REVISION: 2017/05/26 (recycling my old dictionary implementation)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -1317,6 +1317,7 @@
             if(VERBOSE) write(CONS_OUT,'("#ERROR(gfc::dictionary::search): delete: dictionary element destruction failed!")')
             dict_search=GFC_MEM_FREE_FAILED
            endif
+           if(associated(this%current,curr)) this%current=>NULL()
            deallocate(curr,STAT=j)
            if(j.ne.0) then
             if(VERBOSE) write(CONS_OUT,'("#ERROR(gfc::dictionary::search): delete: dictionary element deallocation failed!")')
@@ -1879,7 +1880,9 @@
           j=list_it%next()
          enddo
          if(j.ne.GFC_NO_MOVE) then; call test_quit(8); return; endif
-         j=list_it%release(); if(j.ne.GFC_SUCCESS) then; call test_quit(9); return; endif
+         j=list_it%reset(); if(j.ne.GFC_SUCCESS) then; call test_quit(9); return; endif
+         j=list_it%delete_all(); if(j.ne.GFC_SUCCESS) then; call test_quit(10); return; endif
+         j=list_it%release(); if(j.ne.GFC_SUCCESS) then; call test_quit(11); return; endif
          tm=thread_wtime(tms)
          !write(jo,'("Traversing time for ",i11," elements is ",F10.4," sec")') i,tm !debug
 !Success:
