@@ -220,20 +220,20 @@ NO_AMD = -DNO_AMD
 NO_PHI = -DNO_PHI
 
 #C FLAGS:
-CFLAGS_DEV = -c -g -D_DEBUG
+CFLAGS_DEV = -c -g -O0 -D_DEBUG
 CFLAGS_OPT = -c -O3
 CFLAGS = $(CFLAGS_$(BUILD_TYPE)) $(NO_GPU) $(NO_AMD) $(NO_PHI) $(NO_BLAS) -D$(EXA_OS)
 
 #FORTRAN FLAGS:
-FFLAGS_INTEL_DEV = -c -g -fpp -vec-threshold4 -qopenmp -mkl=parallel
+FFLAGS_INTEL_DEV = -c -g -O0 -fpp -vec-threshold4 -qopenmp -mkl=parallel
 #FFLAGS_INTEL_DEV = -c -g -fpp -vec-threshold4 -openmp
 FFLAGS_INTEL_OPT = -c -O3 -fpp -vec-threshold4 -qopenmp -mkl=parallel
 #FFLAGS_INTEL_OPT = -c -O3 -fpp -vec-threshold4 -openmp
 FFLAGS_CRAY_DEV = -c -g
 FFLAGS_CRAY_OPT = -c -O3
-FFLAGS_GNU_DEV = -c -fopenmp -fbacktrace -fcheck=bounds -fcheck=array-temps -fcheck=pointer -g
+FFLAGS_GNU_DEV = -c -fopenmp -fbacktrace -fcheck=bounds -fcheck=array-temps -fcheck=pointer -g -O0
 FFLAGS_GNU_OPT = -c -fopenmp -O3
-FFLAGS_PGI_DEV = -c -mp -Mcache_align -Mbounds -Mchkptr -Mstandard -g
+FFLAGS_PGI_DEV = -c -mp -Mcache_align -Mbounds -Mchkptr -Mstandard -g -O0
 FFLAGS_PGI_OPT = -c -mp -Mcache_align -Mstandard -O3
 FFLAGS_IBM_DEV = -c -qsmp=omp -g -qkeepparm
 FFLAGS_IBM_OPT = -c -qsmp=omp -O3
@@ -250,7 +250,7 @@ LTHREAD = $(LTHREAD_$(TOOLKIT))
 #LINKING:
 LFLAGS = $(LTHREAD) $(MPI_LINK) $(LA_LINK) $(CUDA_LINK) $(LIB)
 
-OBJS =  ./OBJ/dil_basic.o ./OBJ/timers.o ./OBJ/multords.o ./OBJ/combinatoric.o ./OBJ/stack.o ./OBJ/lists.o ./OBJ/dictionary.o \
+OBJS =  ./OBJ/dil_basic.o ./OBJ/timers.o ./OBJ/stsubs.o ./OBJ/multords.o ./OBJ/combinatoric.o ./OBJ/stack.o ./OBJ/lists.o ./OBJ/dictionary.o \
 	./OBJ/gfc_base.o ./OBJ/gfc_vector.o ./OBJ/gfc_list.o ./OBJ/gfc_tree.o ./OBJ/gfc_stack.o ./OBJ/gfc_vec_tree.o \
 	./OBJ/gfc_queue.o ./OBJ/gfc_pri_queue.o ./OBJ/gfc_dictionary.o ./OBJ/gfc_hash_map.o ./OBJ/gfc_graph.o
 
@@ -264,6 +264,9 @@ lib$(NAME).a: $(OBJS)
 	mkdir -p ./OBJ
 	$(FCOMP) $(INC) $(MPI_INC) $(CUDA_INC) $(FFLAGS) dil_basic.F90 -o ./OBJ/dil_basic.o
 
+./OBJ/stsubs.o: stsubs.F90
+	$(FCOMP) $(INC) $(MPI_INC) $(CUDA_INC) $(FFLAGS) stsubs.F90 -o ./OBJ/stsubs.o
+
 ./OBJ/multords.o: multords.F90
 	$(FCOMP) $(INC) $(MPI_INC) $(CUDA_INC) $(FFLAGS) multords.F90 -o ./OBJ/multords.o
 
@@ -273,7 +276,7 @@ lib$(NAME).a: $(OBJS)
 ./OBJ/timers.o: timers.F90
 	$(FCOMP) $(INC) $(MPI_INC) $(CUDA_INC) $(FFLAGS) timers.F90 -o ./OBJ/timers.o
 
-./OBJ/gfc_base.o: gfc_base.F90 ./OBJ/dil_basic.o ./OBJ/timers.o
+./OBJ/gfc_base.o: gfc_base.F90 ./OBJ/dil_basic.o ./OBJ/stsubs.o ./OBJ/timers.o
 	$(FCOMP) $(INC) $(MPI_INC) $(CUDA_INC) $(FFLAGS) gfc_base.F90 -o ./OBJ/gfc_base.o
 
 ./OBJ/stack.o: stack.F90 ./OBJ/dil_basic.o ./OBJ/timers.o

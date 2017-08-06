@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Base
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017-05-19 (started 2016-02-17)
+!REVISION: 2017-08-05 (started 2016-02-17)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -60,6 +60,7 @@
 #ifndef NO_OMP
         use omp_lib
 #endif
+        use stsubs
         implicit none
         public
 !PARAMETERS:
@@ -119,6 +120,7 @@
 #endif
          contains
           procedure, public:: construct_base=>ContElemConstruct !constructs a new container element, either by reference or by value
+          procedure, public:: construct_base_ref=>ContElemConstructRef !constructs a new container element by reference only from a pointer
           procedure, public:: destruct=>ContElemDestruct        !destructs an existing container element (releases memory occupied by its value)
           procedure, public:: get_value=>ContElemGetValue       !returns a pointer to the element value (unlimited polymorphic)
           procedure, public:: is_empty=>ContElemIsEmpty         !returns TRUE if the element of the container is empty, FALSE otherwise
@@ -270,6 +272,7 @@
         end interface
 !VISIBILITY:
         private ContElemConstruct
+        private ContElemConstructRef
         private ContElemDestruct
         private ContElemGetValue
         private ContElemIsEmpty
@@ -291,6 +294,10 @@
         private IterPredicatedCount
         private IterScanProc
         private IterScanFunc
+!DATA:
+ !Debug:
+        type(C_PTR), public:: ptr_=C_NULL_PTR !GCC debug
+        integer, public:: size_=0             !GCC debug
 
        contains
 !IMPLEMENTATION:
@@ -305,11 +312,7 @@
 !as well as an element pointed to by a container iterator.
          implicit none
          class(gfc_cont_elem_t), intent(inout):: this  !inout: element of a container
-#ifdef ARG_PTR
-         class(*), pointer, intent(in):: obj           !in: value to be stored in this element
-#else
-         class(*), target, intent(in):: obj            !in: value to be stored in this element
-#endif
+         class(*), intent(in), target:: obj            !in: value to be stored in this element
          integer(INTD), intent(out), optional:: ierr   !out: error code (0:success)
          logical, intent(in), optional:: assoc_only    !in: if TRUE, <obj> will be stored by reference, otherwise by value (default)
 #ifdef NO_GNU
@@ -317,10 +320,7 @@
 #endif
          logical, intent(in), optional:: locked        !in: if TRUE, the container element will be assumed already locked (defaults to FALSE)
          integer(INTD):: errc
-         integer:: errcode
          logical:: assoc,lckd,lck
-         class(*), pointer:: new_el
-         character(256):: errmesg
 
          errc=GFC_SUCCESS
          if(present(assoc_only)) then; assoc=assoc_only; else; assoc=.FALSE.; endif
@@ -336,23 +336,11 @@
              else
 #ifdef NO_GNU
               if(present(copy_ctor_f)) then
-               this%value_p=>copy_ctor_f(obj,errc)
+               this%value_p=>copy_ctor_f(obj,errc); if(errc.ne.0) errc=GFC_MEM_ALLOC_FAILED
               else
 #endif
-               new_el=>NULL()
-               allocate(new_el,SOURCE=obj,STAT=errcode,ERRMSG=errmesg)
-               if(errcode.eq.0) then
-                this%value_p=>new_el
-               else
-                write(*,*)'#ERROR(GFC::base:ContElemConstruct): allocate() failed: '//errmesg
-                if(errmesg(1:39).eq.'Attempt to allocate an allocated object') then !debug
-                 write(*,*)'Object (pointer) association status = ',associated(this%value_p) !debug
-                 deallocate(this%value_p,STAT=errcode,ERRMSG=errmesg) !debug
-                 if(errcode.ne.0) write(*,*)'deallocate() failure: '//errmesg !debug
-                 call crash()
-                endif !debug
-                errc=GFC_MEM_ALLOC_FAILED
-               endif
+               this%value_p=>clone_object(obj,errc); if(errc.ne.0) errc=GFC_MEM_ALLOC_FAILED
+               if(errc.eq.GFC_MEM_ALLOC_FAILED) call crash() !debug
 #ifdef NO_GNU
               endif
 #endif
@@ -382,6 +370,48 @@
          if(present(ierr)) ierr=errc
          return
         end subroutine ContElemConstruct
+!------------------------------------------------------------
+        subroutine ContElemConstructRef(this,obj,ierr,locked)
+!Constructs the base part of the element of a container (sets its value).
+!The constructor is allowed to construct the value of a boundary element
+!as well as an element pointed to by a container iterator.
+         implicit none
+         class(gfc_cont_elem_t), intent(inout):: this  !inout: element of a container
+         class(*), pointer, intent(in):: obj           !in: value to be stored in this element
+         integer(INTD), intent(out), optional:: ierr   !out: error code (0:success)
+         logical, intent(in), optional:: locked        !in: if TRUE, the container element will be assumed already locked (defaults to FALSE)
+         integer(INTD):: errc
+         logical:: lckd,lck
+
+         errc=GFC_SUCCESS
+         if(present(locked)) then; lckd=locked; else; lckd=.FALSE.; endif; lck=lckd
+         if(this%is_empty()) then
+          if(.not.lck) lck=(this%in_use(errc,set_lock=.TRUE.,report_refs=.FALSE.).eq.GFC_FALSE)
+          if(lck) then
+           if(errc.eq.GFC_SUCCESS) then
+            if(.not.associated(this%value_p)) then
+             this%value_p=>obj
+             this%alloc=GFC_FALSE
+            else
+             errc=GFC_ELEM_NOT_EMPTY
+            endif
+           endif
+           if(.not.lckd) then
+            if(errc.eq.GFC_SUCCESS) then
+             call this%release_lock(errc)
+            else
+             call this%release_lock()
+            endif
+           endif
+          else
+           if(errc.eq.GFC_SUCCESS) errc=GFC_IN_USE
+          endif
+         else
+          errc=GFC_ELEM_NOT_EMPTY
+         endif
+         if(present(ierr)) ierr=errc
+         return
+        end subroutine ContElemConstructRef
 !-----------------------------------------------------------
         subroutine ContElemDestruct(this,ierr,dtor_f,locked)
 !Destructs the value of an element of a container (not the element itself).
