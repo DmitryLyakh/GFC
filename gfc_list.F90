@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Bi-directional linked list
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2017-08-29 (started 2016-02-28)
+!REVISION: 2017-12-05 (started 2016-02-28)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -60,6 +60,7 @@
           procedure, public:: is_set=>ListPosIsSet !returns TRUE if the list position is set
           procedure, public:: clean=>ListPosClean  !resets the list position to NULL
         end type list_pos_t
+        type(list_pos_t), parameter, public:: LIST_POS_NULL=list_pos_t()
  !Linked list:
         type, extends(gfc_container_t), public:: list_bi_t
          class(list_elem_t), pointer, private:: first_elem=>NULL() !first element of the linked list
@@ -70,6 +71,9 @@
           procedure, private:: ListDuplicateToList                 !duplicates a list into another list either by value or by reference
           procedure, private:: ListDuplicateToVector               !duplicates a list into a vector either by value or by reference
           generic, public:: duplicate=>ListDuplicateToList,ListDuplicateToVector
+          procedure, private:: ListBiAssign                        !copy assignment
+          generic, public:: assignment(=)=>ListBiAssign
+          final:: list_bi_dtor                                     !dtor
         end type list_bi_t
  !List iterator:
         type, extends(gfc_iter_t), public:: list_iter_t
@@ -83,6 +87,8 @@
           procedure, public:: pointee=>ListIterPointee             !returns the container element currently pointed to by the iterator
           procedure, public:: next=>ListIterNext                   !moves the iterator to the next list element
           procedure, public:: previous=>ListIterPrevious           !moves the iterator to the previous list element
+          procedure, public:: on_first=>ListIterOnFirst            !returns TRUE if the iterator is positioned on the first element of the list
+          procedure, public:: on_last=>ListIterOnLast              !returns TRUE if the iterator is positioned on the last element of the list
           procedure, public:: append=>ListIterAppend               !inserts a new element either at the beginning or at the end of the container
           procedure, public:: insert_elem=>ListIterInsertElem      !inserts a new element at the current position of the container
           procedure, public:: insert_list=>ListIterInsertList      !inserts another linked list at the current position of the container
@@ -111,6 +117,8 @@
         private ListIsSublist
         private ListDuplicateToList
         private ListDuplicateToVector
+        private ListBiAssign
+        public list_bi_dtor
  !list_iter_t:
         private ListIterInit
         private ListIterReset
@@ -119,6 +127,8 @@
         private ListIterPointee
         private ListIterNext
         private ListIterPrevious
+        private ListIterOnFirst
+        private ListIterOnLast
         private ListIterAppend
         private ListIterInsertElem
         private ListIterInsertList
@@ -384,6 +394,29 @@
          endif
          return
         end function ListDuplicateToVector
+!----------------------------------------
+        subroutine ListBiAssign(this,src)
+!Copy assignment.
+         implicit none
+         class(list_bi_t), intent(out):: this !out: list
+         class(list_bi_t), intent(in):: src   !in: source list
+         integer(INTD):: errc
+
+         errc=src%duplicate(this)
+         return
+        end subroutine ListBiAssign
+!------------------------------------
+        subroutine list_bi_dtor(this)
+         implicit none
+         type(list_bi_t):: this
+         type(list_iter_t):: lit
+         integer(INTD):: errc
+
+         errc=lit%init(this)
+         errc=lit%delete_all()
+         errc=lit%release()
+         return
+        end subroutine list_bi_dtor
 !----------------------------------------------------
         function ListIterInit(this,cont) result(ierr)
 !Initializes the iterator and resets it to the beginning of the container.
@@ -543,6 +576,38 @@
          endif
          return
         end function ListIterPrevious
+!------------------------------------------------------
+        function ListIterOnFirst(this,ierr) result(res)
+!Returns TRUE if the iterator is positioned on the first element of the list
+         logical:: res                               !out: result
+         class(list_iter_t), intent(in):: this       !in: list iterator
+         integer(INTD), intent(out), optional:: ierr !out: error code
+         integer(INTD):: errc
+
+         res=.FALSE.; errc=this%get_status()
+         if(errc.eq.GFC_IT_ACTIVE) then
+          errc=GFC_SUCCESS
+          res=associated(this%current,this%container%first_elem)
+         endif
+         if(present(ierr)) ierr=errc
+         return
+        end function ListIterOnFirst
+!-----------------------------------------------------
+        function ListIterOnLast(this,ierr) result(res)
+!returns TRUE if the iterator is positioned on the last element of the list
+         logical:: res                               !out: result
+         class(list_iter_t), intent(in):: this       !in: list iterator
+         integer(INTD), intent(out), optional:: ierr !out: error code
+         integer(INTD):: errc
+
+         res=.FALSE.; errc=this%get_status()
+         if(errc.eq.GFC_IT_ACTIVE) then
+          errc=GFC_SUCCESS
+          res=associated(this%current,this%container%last_elem)
+         endif
+         if(present(ierr)) ierr=errc
+         return
+        end function ListIterOnLast
 !----------------------------------------------------------------------------------------
 #ifdef NO_GNU
         function ListIterAppend(this,elem_val,at_top,assoc_only,copy_ctor_f) result(ierr) !`GCC/5.3.0 has a bug with this
@@ -885,27 +950,54 @@
          endif
          return
         end function ListIterMoveElem
-!-----------------------------------------------------------
-        function ListIterMoveList(this,another) result(ierr)
-!Moves an entire list from one iterator to another by appending it
-!right after another list's current iterator position. Another
-!iterator will then move to the last appended element.
+!-------------------------------------------------------------------------------------
+        function ListIterMoveList(this,another,max_elems,num_elems_moved) result(ierr)
+!Moves the entire list or its part from one iterator to another by
+!appending the moved elements right after another list's current iterator
+!position. Another iterator will then reposition to the last appended element.
+!If <max_elems> is absent, all list elements will be moved from <this> to
+!<another> and <this> list will become empty at the end. If <max_elems>
+!is present, only up to that number of list elements will be moved,
+!starting from the current iterator position of <this>. If the end
+!of <this> list is reached before <max_elems> elements have been moved,
+!no further elements will be moved. An optional <num_elems_moved> will
+!reflect the exact number of list elements moved.
          implicit none
-         integer(INTD):: ierr                        !out: error code
-         class(list_iter_t), intent(inout):: this    !inout: source list iterator (from)
-         class(list_iter_t), intent(inout):: another !inout: destination list iterator (to)
+         integer(INTD):: ierr                            !out: error code
+         class(list_iter_t), intent(inout):: this        !inout: source list iterator (from)
+         class(list_iter_t), intent(inout):: another     !inout: destination list iterator (to)
+         integer(INTD), intent(in), optional:: max_elems !in: upper limit on the number of moved elements
+         integer(INTD), intent(out), optional:: num_elems_moved !out: number of list elements moved
+         integer(INTD):: errc,n,nelems,num_moved
 
-         ierr=another%get_status()
+         num_moved=0; ierr=another%get_status()
          if(ierr.eq.GFC_IT_ACTIVE.or.ierr.eq.GFC_IT_EMPTY) then
-          ierr=this%reset(); ierr=this%get_status()
-          do while(ierr.eq.GFC_IT_ACTIVE)
-           ierr=this%move_elem(another); if(ierr.ne.GFC_SUCCESS) exit
-           ierr=this%get_status()
-          enddo
-          if(ierr.eq.GFC_IT_EMPTY) ierr=GFC_SUCCESS
+          nelems=-1; if(present(max_elems)) nelems=max_elems
+          if(nelems.ne.0) then
+           if(nelems.lt.0) then !move all list elements
+            ierr=this%reset(); ierr=this%get_status()
+            do while(ierr.eq.GFC_IT_ACTIVE)
+             ierr=this%move_elem(another); if(ierr.ne.GFC_SUCCESS) exit
+             num_moved=num_moved+1
+             ierr=this%get_status()
+            enddo
+            if(ierr.eq.GFC_IT_EMPTY) ierr=GFC_SUCCESS
+            errc=this%reset(); if(errc.ne.GFC_SUCCESS.and.ierr.eq.GFC_SUCCESS) ierr=errc
+           else !move up to <nelems> list elements
+            n=nelems; ierr=this%get_status()
+            do while(ierr.eq.GFC_IT_ACTIVE)
+             if(this%on_last()) n=1
+             ierr=this%move_elem(another); if(ierr.ne.GFC_SUCCESS) exit
+             num_moved=num_moved+1
+             ierr=this%get_status(); n=n-1; if(n.eq.0) exit
+            enddo
+            if(ierr.eq.GFC_IT_EMPTY.or.ierr.eq.GFC_IT_ACTIVE) ierr=GFC_SUCCESS
+           endif
+          endif
          else
           ierr=GFC_INVALID_ARGS
          endif
+         if(present(num_elems_moved)) num_elems_moved=num_moved
          return
         end function ListIterMoveList
 !-------------------------------------------------------------------
@@ -970,16 +1062,19 @@
          endif
          return
         end function ListIterSplit
-!--------------------------------------------------------
-        function ListIterDelete(this,dtor_f) result(ierr)
+!------------------------------------------------------------------
+        function ListIterDelete(this,dtor_f,value_out) result(ierr)
 !Deletes the element in the current iterator position. The current
-!iterator position moves to the preious element, unless there is none.
+!iterator position moves to the previous element, unless there is none.
 !In the latter case, it moves to the next element, unless there is none.
 !In the latter case, the iterator/container becomes empty.
+!If <value_out> is present, the list element value will not be deleted
+!but moved into <value_out>. In this case, <dtor_f> will be ignored.
          implicit none
-         integer(INTD):: ierr                         !out: error code (0:success)
-         class(list_iter_t), intent(inout):: this     !inout: iterator
-         procedure(gfc_destruct_i), optional:: dtor_f !in: element value destructor
+         integer(INTD):: ierr                                 !out: error code (0:success)
+         class(list_iter_t), intent(inout):: this             !inout: iterator
+         procedure(gfc_destruct_i), optional:: dtor_f         !in: element value destructor
+         class(*), pointer, intent(out), optional:: value_out !out: pointer to the saved value of the deleted list element
          class(list_elem_t), pointer:: lep
          integer(INTD):: errc
          integer(INTL):: nelems
@@ -1015,20 +1110,24 @@
              if(last) this%container%last_elem=>this%current
             endif
            endif
-           if(present(dtor_f)) then
-            call lep%destruct(errc,dtor_f)
+           if(present(value_out)) then
+            call lep%destruct(errc,value_out=value_out)
            else
-            call lep%destruct(errc)
+            if(present(dtor_f)) then
+             call lep%destruct(errc,dtor_f)
+            else
+             call lep%destruct(errc)
+            endif
            endif
-           if(errc.ne.0) then
+           if(errc.ne.GFC_SUCCESS) then
             if(VERBOSE) write(CONS_OUT,*)'GFC::list:ListIterDelete: element value destruction failed with error ',errc !debug
-            ierr=NOT_CLEAN
+            if(ierr.eq.GFC_SUCCESS) ierr=NOT_CLEAN
            endif
            deallocate(lep,STAT=errc,ERRMSG=errmesg)
            if(errc.ne.0) then
-            if(VERBOSE) write(CONS_OUT,*)'GFC::list:ListIterDelete: deallocate(lep) failed: ',errc,': '//&
-                         &errmesg(1:len_trim(errmesg)) !debug
-            ierr=NOT_CLEAN
+            if(VERBOSE) write(CONS_OUT,*)'GFC::list:ListIterDelete: deallocate() failed: ',errc,': '//&
+                        &errmesg(1:len_trim(errmesg)) !debug
+            if(ierr.eq.GFC_SUCCESS) ierr=NOT_CLEAN
            endif
           else
            ierr=GFC_CORRUPTED_CONT
@@ -1104,18 +1203,20 @@
          return
         end function ListIterDeleteAll
 !------------------------------------------------------------
-        function ListIterBookmark(this,bookmark) result(ierr)
+        function ListIterBookmark(this,ierr) result(bookmark)
 !Bookmarks the current iterator position.
          implicit none
-         integer(INTD):: ierr                        !out: error code
+         type(list_pos_t):: bookmark                 !out: bookmarked list position
          class(list_iter_t), intent(in):: this       !in: list iterator
-         class(list_pos_t), intent(out):: bookmark   !out: bookmarked list position
+         integer(INTD), intent(out), optional:: ierr !out: error code
+         integer(INTD):: errc
 
-         ierr=this%get_status()
-         if(ierr.eq.GFC_IT_ACTIVE) then
-          ierr=GFC_SUCCESS
+         errc=this%get_status()
+         if(errc.eq.GFC_IT_ACTIVE) then
+          errc=GFC_SUCCESS
           bookmark%elem_p=>this%current
          endif
+         if(present(ierr)) ierr=errc
          return
         end function ListIterBookmark
 !--------------------------------------------------------
@@ -1156,17 +1257,23 @@
          endif
          return
         end subroutine ListIterJump_
-!----------------------------------------------------
-        function ListIterPop_(this,ierr) result(elem)
+!------------------------------------------------------------
+        function ListIterPop_(this,ierr,to_prev) result(elem)
 !Pops up the element at the current iterator position without destroying it.
+!By default, the current iterator position will try to move to the next element,
+!unless <to_prev> says otherwise.
          implicit none
          class(list_elem_t), pointer:: elem          !out: owning pointer to the current element (detached from the list)
          class(list_iter_t), intent(inout):: this    !inout: list iterator
          integer(INTD), intent(out), optional:: ierr !out: error code
+         logical, intent(in), optional:: to_prev     !in: if TRUE, <this> iterator will move to the previous element (defaults to FALSE)
+         class(list_elem_t), pointer:: list_elem_null=>NULL()
          integer(INTD):: errc
+         logical:: prev
 
          elem=>NULL(); errc=this%get_status()
          if(errc.eq.GFC_IT_ACTIVE) then
+          prev=.FALSE.; if(present(to_prev)) prev=to_prev
           errc=GFC_SUCCESS; elem=>this%current
           if(associated(elem,this%container%first_elem)) then
            if(.not.associated(elem,this%container%last_elem)) then
@@ -1174,11 +1281,19 @@
             call this%jump_(elem%next_elem)
            else
             this%container%first_elem=>NULL(); this%container%last_elem=>NULL()
-            call this%jump_(NULL()); errc=this%reset()
+            call this%jump_(list_elem_null); errc=this%reset()
            endif
           else
-           if(associated(elem,this%container%last_elem)) this%container%last_elem=>elem%prev_elem
-           call this%jump_(elem%prev_elem)
+           if(associated(elem,this%container%last_elem)) then
+            this%container%last_elem=>elem%prev_elem
+            call this%jump_(elem%prev_elem)
+           else
+            if(prev) then
+             call this%jump_(elem%prev_elem)
+            else
+             call this%jump_(elem%next_elem)
+            endif
+           endif
           endif
           if(associated(elem%prev_elem)) elem%prev_elem%next_elem=>elem%next_elem
           if(associated(elem%next_elem)) elem%next_elem%prev_elem=>elem%prev_elem
