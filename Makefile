@@ -5,7 +5,7 @@ NAME = gfc
 export WRAP ?= NOWRAP
 #Compiler: [GNU|PGI|INTEL|CRAY|IBM]:
 export TOOLKIT ?= GNU
-#Optimization: [DEV|OPT]:
+#Optimization: [DEV|OPT|PRF]:
 export BUILD_TYPE ?= OPT
 #MPI Library: [NONE|MPICH|OPENMPI]:
 export MPILIB ?= NONE
@@ -31,7 +31,12 @@ export PATH_OPENMPI ?= /usr/local/mpi/openmpi/2.0.1
 #YOU ARE DONE!
 
 
-#=================
+#=======================
+ifeq ($(BUILD_TYPE),PRF)
+ COMP_PREF = scorep --thread=omp --cuda
+else
+ COMP_PREF =
+endif
 #Fortran compiler:
 FC_GNU = gfortran
 FC_PGI = pgf90
@@ -46,7 +51,7 @@ else
 FC_NOWRAP = $(FC_$(MPILIB))
 endif
 FC_WRAP = ftn
-FCOMP = $(FC_$(WRAP))
+FCOMP = $(COMP_PREF) $(FC_$(WRAP))
 #C compiler:
 CC_GNU = gcc
 CC_PGI = pgcc
@@ -61,7 +66,7 @@ else
 CC_NOWRAP = $(CC_$(MPILIB))
 endif
 CC_WRAP = cc
-CCOMP = $(CC_$(WRAP))
+CCOMP = $(COMP_PREF) $(CC_$(WRAP))
 #C++ compiler:
 CPP_GNU = g++
 CPP_PGI = pgc++
@@ -80,7 +85,7 @@ else
 CPP_NOWRAP = $(CPP_$(MPILIB))
 endif
 CPP_WRAP = CC
-CPPCOMP = $(CPP_$(WRAP))
+CPPCOMP = $(COMP_PREF) $(CPP_$(WRAP))
 
 #COMPILER INCLUDES:
 INC_GNU = -I.
@@ -152,23 +157,46 @@ PIC_FLAG_CRAY = -hpic
 PIC_FLAG = $(PIC_FLAG_$(TOOLKIT))
 
 #C FLAGS:
-CFLAGS_DEV = -c -g -O0 -D_DEBUG
-CFLAGS_OPT = -c -O3
-CFLAGS = $(CFLAGS_$(BUILD_TYPE)) $(NO_GPU) $(NO_AMD) $(NO_PHI) -D$(EXA_OS) $(PIC_FLAG)
+CFLAGS_INTEL_DEV = -c -g -O0 -qopenmp -D_DEBUG
+CFLAGS_INTEL_OPT = -c -O3 -qopenmp
+CFLAGS_INTEL_PRF = -c -g -O3 -qopenmp
+CFLAGS_CRAY_DEV = -c -g -O0 -D_DEBUG
+CFLAGS_CRAY_OPT = -c -O3
+CFLAGS_CRAY_PRF = -c -g -O3
+CFLAGS_GNU_DEV = -c -g -O0 -fopenmp -D_DEBUG
+CFLAGS_GNU_OPT = -c -O3 -fopenmp
+CFLAGS_GNU_PRF = -c -g -O3 -fopenmp
+CFLAGS_PGI_DEV = -c -g -O0 -D_DEBUG -silent -w
+CFLAGS_PGI_OPT = -c -O3 -silent -w -Mnovect
+CFLAGS_PGI_PRF = -c -g -O3 -silent -w -Mnovect
+CFLAGS_IBM_DEV = -c -g -O0 -qsmp=omp -D_DEBUG
+CFLAGS_IBM_OPT = -c -O3 -qsmp=omp
+CFLAGS_IBM_PRF = -c -g -O3 -qsmp=omp
+CFLAGS = $(CFLAGS_$(TOOLKIT)_$(BUILD_TYPE)) $(NO_GPU) $(NO_AMD) $(NO_PHI) $(NO_BLAS) -D$(EXA_OS) $(PIC_FLAG)
+
+#CPP FLAGS:
+ifeq ($(TOOLKIT),CRAY)
+CPPFLAGS = $(CFLAGS) -h std=c++11
+else
+CPPFLAGS = $(CFLAGS) -std=c++11
+endif
 
 #FORTRAN FLAGS:
-FFLAGS_INTEL_DEV = -c -g -O0 -fpp -vec-threshold4 -qopenmp -mkl=parallel
-#FFLAGS_INTEL_DEV = -c -g -fpp -vec-threshold4 -openmp
-FFLAGS_INTEL_OPT = -c -O3 -fpp -vec-threshold4 -qopenmp -mkl=parallel
-#FFLAGS_INTEL_OPT = -c -O3 -fpp -vec-threshold4 -openmp
+FFLAGS_INTEL_DEV = -c -std08 -g -O0 -fpp -vec-threshold4 -traceback -qopenmp -mkl=parallel
+FFLAGS_INTEL_OPT = -c -std08 -O3 -fpp -vec-threshold4 -traceback -qopenmp -mkl=parallel
+FFLAGS_INTEL_PRF = -c -std08 -g -O3 -fpp -vec-threshold4 -traceback -qopenmp -mkl=parallel
 FFLAGS_CRAY_DEV = -c -g
 FFLAGS_CRAY_OPT = -c -O3
+FFLAGS_CRAY_PRF = -c -g -O3
 FFLAGS_GNU_DEV = -c -fopenmp -fbacktrace -fcheck=bounds -fcheck=array-temps -fcheck=pointer -g -Og
 FFLAGS_GNU_OPT = -c -fopenmp -O3
+FFLAGS_GNU_PRF = -c -fopenmp -g -O3
 FFLAGS_PGI_DEV = -c -mp -Mcache_align -Mbounds -Mchkptr -Mstandard -Mallocatable=03 -g -O0
 FFLAGS_PGI_OPT = -c -mp -Mcache_align -Mstandard -Mallocatable=03 -O3
+FFLAGS_PGI_PRF = -c -mp -Mcache_align -Mstandard -Mallocatable=03 -g -O3
 FFLAGS_IBM_DEV = -c -qsmp=noopt -g9 -O0 -qfullpath -qkeepparm -qcheck -qsigtrap -qstackprotect=all
 FFLAGS_IBM_OPT = -c -qsmp=omp -O3
+FFLAGS_IBM_PRF = -c -qsmp=omp -g -O3
 FFLAGS = $(FFLAGS_$(TOOLKIT)_$(BUILD_TYPE)) $(DF)$(NO_GPU) $(DF)$(NO_AMD) $(DF)$(NO_PHI) $(DF)-D$(EXA_OS) $(DF)$(NO_PGI) $(PIC_FLAG)
 
 #THREADS:
