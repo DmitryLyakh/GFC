@@ -1,6 +1,6 @@
 !Generic Fortran Containers (GFC): Tree
 !AUTHOR: Dmitry I. Lyakh (Liakh): quant4me@gmail.com, liakhdi@ornl.gov
-!REVISION: 2018-03-09 (started 2016-02-17)
+!REVISION: 2018-10-10 (started 2016-02-17)
 
 !Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
 !Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
@@ -87,7 +87,7 @@
           procedure, public:: next=>TreeIterNext                    !moves the iterator to the next element, if any
           procedure, public:: previous=>TreeIterPrevious            !moves the iterator to the previous element, if any
           procedure, public:: move_to_sibling=>TreeIterMoveToSibling!moves the iterator to the next/previous sibling, if any
-          procedure, public:: move_to_child=>TreeIterMoveToChild    !moves the iterator to the first child, if any
+          procedure, public:: move_to_child=>TreeIterMoveToChild    !moves the iterator to either the first or the last child, if any
           procedure, public:: move_to_parent=>TreeIterMoveToParent  !moves the iterator to the parent, if any
           procedure, public:: move_up=>TreeIterMoveUp               !moves the iterator towards the root a specific number of hops
           procedure, public:: move_to_cousin=>TreeIterMoveToCousin  !moves the iterator to the next/previous cousin (within the tree level)
@@ -524,12 +524,13 @@
          endif
          return
         end function TreeIterMoveToSibling
-!------------------------------------------------------
-        function TreeIterMoveToChild(this) result(ierr)
-!Moves the iterator to the first child, if any.
+!--------------------------------------------------------------
+        function TreeIterMoveToChild(this,to_last) result(ierr)
+!Moves the iterator to either the first or the last child, if any.
          implicit none
-         integer(INTD):: ierr                        !out: error code (0:success)
-         class(tree_iter_t), intent(inout):: this    !inout: iterator
+         integer(INTD):: ierr                     !out: error code (0:success)
+         class(tree_iter_t), intent(inout):: this !inout: iterator
+         logical, intent(in), optional:: to_last  !in: if TRUE, the iterator will move to the last child (defaults to FALSE)
 
          ierr=this%get_status()
          if(ierr.eq.GFC_IT_ACTIVE) then
@@ -538,6 +539,15 @@
             call this%current%decr_ref_()
             this%current=>this%current%first_child
             call this%current%incr_ref_()
+            if(present(to_last)) then
+             if(to_last) then
+              if(.not.associated(this%current,this%current%prev_sibling)) then !previous sibling of the first child is the last child
+               call this%current%decr_ref_()
+               this%current=>this%current%prev_sibling
+               call this%current%incr_ref_()
+              endif
+             endif
+            endif
             ierr=GFC_SUCCESS
            else
             ierr=GFC_NO_MOVE
@@ -596,14 +606,17 @@
 !-------------------------------------------------------------------
         function TreeIterMoveToCousin(this,to_previous) result(ierr)
 !Moves the iterator either to the next or to the previous cousin.
-!A cousin is a tree vertex at the same tree level.
+!A cousin is a tree vertex at the same tree level. In case the
+!current iterator position has no next/previous cousin, it will
+!not change and the error code GFC_NO_MOVE will be returned.
+!In case of real errors, the iterator will become undefined.
          implicit none
          integer(INTD):: ierr                        !out: error code (0:success)
          class(tree_iter_t), intent(inout):: this    !inout: iterator
          logical, intent(in), optional:: to_previous !in: if TRUE, the iterator will move to the previous cousin (defaults to FALSE)
          class(tree_vertex_t), pointer:: tvp
          logical:: to_prev
-         integer(INTD):: n,m
+         integer(INTD):: n
 
          ierr=this%get_status()
          if(ierr.eq.GFC_IT_ACTIVE) then
@@ -614,29 +627,25 @@
            mloop: do while(.not.associated(this%current,this%container%root))
             ierr=this%move_to_sibling(to_prev)
             if(ierr.eq.GFC_SUCCESS) then
-             m=n
-             do while(m.gt.0)
-              ierr=this%move_to_child(); if(ierr.ne.GFC_SUCCESS) exit
-              m=m-1
+             do while(n.gt.0)
+              ierr=this%move_to_child(to_last=to_prev); if(ierr.ne.GFC_SUCCESS) exit
+              n=n-1
              enddo
-             if(ierr.eq.GFC_NO_MOVE) then
-              do while(m.lt.n); ierr=this%move_to_parent(); m=m+1; enddo
-             else
-              exit mloop
-             endif
+             if(ierr.ne.GFC_NO_MOVE) exit mloop
             else
              if(ierr.ne.GFC_NO_MOVE) exit mloop
              ierr=this%move_to_parent(); if(ierr.ne.GFC_SUCCESS) exit mloop
              n=n+1
             endif
            enddo mloop
+           if(ierr.eq.GFC_NO_MOVE) ierr=GFC_ERROR
            if(associated(this%current,this%container%root)) then
-            if(ierr.eq.GFC_SUCCESS) then
-             call this%current%decr_ref_()
-             this%current=>tvp
-             call this%current%incr_ref_()
-             ierr=GFC_NO_MOVE
-            endif
+            call this%current%decr_ref_()
+            this%current=>tvp
+            call this%current%incr_ref_()
+            if(ierr.eq.GFC_SUCCESS) ierr=GFC_NO_MOVE !no next/previous sibling (not an error)
+           else
+            if(ierr.eq.GFC_SUCCESS.and.n.ne.0) ierr=GFC_ERROR
            endif
           else
            ierr=GFC_CORRUPTED_CONT
@@ -647,7 +656,7 @@
 !-----------------------------------------------------------------
         function TreeIterFindFirstOfLevel(this,level) result(ierr)
 !Moves the iterator to the first element at a given tree level.
-!If no such element exists, returns GFC_NO_MOVE and reset the
+!If no such element exists, returns GFC_NO_MOVE and resets the
 !iterator status to GFC_IT_DONE.
          implicit none
          integer(INTD):: ierr                     !out: error code
