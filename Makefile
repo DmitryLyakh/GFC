@@ -1,6 +1,7 @@
 NAME = gfc
 
 #ADJUST THE FOLLOWING ACCORDINGLY:
+
 #Cross-compiling wrappers: [WRAP|NOWRAP]:
 export WRAP ?= NOWRAP
 #Compiler: [GNU|PGI|INTEL|CRAY|IBM]:
@@ -12,9 +13,10 @@ export MPILIB ?= NONE
 #Operating system: [LINUX|NO_LINUX]:
 export EXA_OS ?= LINUX
 
+
 #SET YOUR LOCAL PATHS (for unwrapped builds):
 
-#MPI library (whichever you have, set one):
+#MPI library (only if use MPI):
 # Set this if you have MPICH or its derivative:
 export PATH_MPICH ?= /usr/local/mpi/mpich/3.2
 #  Only reset these if MPI files are spread in the system directories:
@@ -188,7 +190,7 @@ FFLAGS_INTEL_PRF = -c -std08 -g -O3 -fpp -vec-threshold4 -traceback -qopenmp -mk
 FFLAGS_CRAY_DEV = -c -g
 FFLAGS_CRAY_OPT = -c -O3
 FFLAGS_CRAY_PRF = -c -g -O3
-FFLAGS_GNU_DEV = -c -fopenmp -fbacktrace -fcheck=bounds -fcheck=array-temps -fcheck=pointer -g -Og
+FFLAGS_GNU_DEV = -c -fopenmp -g -Og -fbacktrace -fcheck=bounds -fcheck=array-temps -fcheck=pointer -ffpe-trap=invalid,zero,overflow
 FFLAGS_GNU_OPT = -c -fopenmp -O3
 FFLAGS_GNU_PRF = -c -fopenmp -g -O3
 FFLAGS_PGI_DEV = -c -mp -Mcache_align -Mbounds -Mchkptr -Mstandard -Mallocatable=03 -g -O0
