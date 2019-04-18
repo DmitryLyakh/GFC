@@ -1,8 +1,8 @@
 !BASIC FORTRAN PARAMETERS (Fortran-2003)
-!REVISION: 2017/10/15
+!REVISION: 2019/03/05
 
-!Copyright (C) 2014-2017 Dmitry I. Lyakh (Liakh)
-!Copyright (C) 2014-2017 Oak Ridge National Laboratory (UT-Battelle)
+!Copyright (C) 2014-2019 Dmitry I. Lyakh (Liakh)
+!Copyright (C) 2014-2019 Oak Ridge National Laboratory (UT-Battelle)
 
 !This file is part of ExaTensor.
 
@@ -21,6 +21,9 @@
 
        module dil_basic
         use, intrinsic:: ISO_C_BINDING
+#ifndef NO_OMP
+        use omp_lib
+#endif
         implicit none
         public
 
@@ -29,21 +32,22 @@
         integer(C_INT), parameter, public:: INTS=2   !short integer size
         integer(C_INT), parameter, public:: INTD=4   !default integer size
         integer(C_INT), parameter, public:: INTL=8   !long integer size
+        integer(C_INT), parameter, public:: REALH=2  !half real size
         integer(C_INT), parameter, public:: REALS=4  !short real size
         integer(C_INT), parameter, public:: REALD=8  !default real size
         integer(C_INT), parameter, public:: REALL=16 !long real size
 #ifndef NO_PHI
-!DIR$ ATTRIBUTES OFFLOAD:mic:: INTB,INTS,INTD,INTL,REALS,REALD,REALL
-!DIR$ ATTRIBUTES ALIGN:128:: INTB,INTS,INTD,INTL,REALS,REALD,REALL
+!DIR$ ATTRIBUTES OFFLOAD:mic:: INTB,INTS,INTD,INTL,REALH,REALS,REALD,REALL
+!DIR$ ATTRIBUTES ALIGN:128:: INTB,INTS,INTD,INTL,REALH,REALS,REALD,REALL
 #endif
 
 !BASIC ALIASES (keep consistent with tensor_algebra.h):
-        integer(C_INT), parameter, public:: NOPE=0                  !"NO" answer
-        integer(C_INT), parameter, public:: YEP=1                   !"YES" answer
-        integer(C_INT), parameter, public:: SUCCESS=0               !success status
-        integer(C_INT), parameter, public:: GENERIC_ERROR=-666      !generic error
-        integer(C_INT), parameter, public:: TRY_LATER=-918273645    !resources are currently busy: KEEP THIS UNIQUE!
-        integer(C_INT), parameter, public:: NOT_CLEAN=-192837465    !resource release did not go cleanly but you may continue: KEEP THIS UNIQUE!
+        integer(C_INT), parameter, public:: NOPE=0                !"NO" answer
+        integer(C_INT), parameter, public:: YEP=1                 !"YES" answer
+        integer(C_INT), parameter, public:: SUCCESS=0             !success status
+        integer(C_INT), parameter, public:: GENERIC_ERROR=-666    !generic error status
+        integer(C_INT), parameter, public:: TRY_LATER=-918273645  !resources are currently busy: KEEP THIS UNIQUE!
+        integer(C_INT), parameter, public:: NOT_CLEAN=-192837465  !resource release did not go cleanly but you may continue: KEEP THIS UNIQUE!
 #ifndef NO_PHI
 !DIR$ ATTRIBUTES OFFLOAD:mic:: NOPE,YEP,SUCCESS,GENERIC_ERROR,TRY_LATER,NOT_CLEAN
 !DIR$ ATTRIBUTES ALIGN:128:: NOPE,YEP,SUCCESS,GENERIC_ERROR,TRY_LATER,NOT_CLEAN
@@ -52,13 +56,13 @@
 !BASIC NUMERIC DATA KINDS (keep consistent with tensor_algebra.h):
         integer(C_INT), parameter, public:: NO_TYPE=0 !no type/kind
         integer(C_INT), parameter, public:: R2=2      !half-precision float tensor data kind
-        integer(C_INT), parameter, public:: R4=4      !float tensor data kind
-        integer(C_INT), parameter, public:: R8=8      !double tensor data kind
-!       integer(C_INT), parameter, public:: R16=10    !long double tensor data kind
-        integer(C_INT), parameter, public:: C2=12     !half-precision complex tensor data kind
-        integer(C_INT), parameter, public:: C4=14     !float complex tensor data kind
-        integer(C_INT), parameter, public:: C8=18     !double complex tensor data kind
-!       integer(C_INT), parameter, public:: C16=20    !long double complex tensor data kind
+        integer(C_INT), parameter, public:: R4=4      !single-precision float tensor data kind
+        integer(C_INT), parameter, public:: R8=8      !double-precision float tensor data kind
+!       integer(C_INT), parameter, public:: R16=10    !quadruple-precision float tensor data kind
+        integer(C_INT), parameter, public:: C2=12     !half-precision complex float tensor data kind
+        integer(C_INT), parameter, public:: C4=14     !single-precision complex float tensor data kind
+        integer(C_INT), parameter, public:: C8=18     !double-precision complex float tensor data kind
+!       integer(C_INT), parameter, public:: C16=20    !quadruple-precision complex float tensor data kind
         real(4), parameter, public:: R4_=0.0
         real(8), parameter, public:: R8_=0d0
         complex(4), parameter, public:: C4_=(0.0,0.0)
@@ -121,4 +125,128 @@
 !DIR$ ATTRIBUTES OFFLOAD:mic:: EPS4,EPS8,ZERO_THRESH
 !DIR$ ATTRIBUTES ALIGN:128:: EPS4,EPS8,ZERO_THRESH
 #endif
+
+!BASIC CONSTANTS:
+        character(C_CHAR), parameter, public:: CHAR_NULL=achar(0) !null character
+
+!OBJECT LOCK:
+        type, public:: object_lock_t
+#ifndef NO_OMP
+         integer(omp_nest_lock_kind), private:: lock_omp=-1
+         integer, private:: initialized=-1
+#endif
+         contains
+          procedure, private:: ObjectLockCtorCopy
+          generic, public:: assignment(=)=>ObjectLockCtorCopy
+          procedure, public:: lock=>ObjectLockLock
+          procedure, public:: unlock=>ObjectLockUnlock
+          procedure, public:: clear=>ObjectLockClear
+          final:: object_lock_dtor
+        end type object_lock_t
+        private ObjectLockCtorCopy
+        private ObjectLockLock
+        private ObjectLockUnlock
+        private ObjectLockClear
+        public object_lock_dtor
+        type(object_lock_t), save, protected:: object_lock_null !empty object lock
+
+       contains
+
+![object_lock_t]==================================
+        subroutine ObjectLockCtorCopy(this,source)
+         implicit none
+         class(object_lock_t), intent(out):: this
+         class(object_lock_t), intent(in):: source
+#ifndef NO_OMP
+!$OMP ATOMIC WRITE
+         this%initialized=-1
+!$OMP FLUSH(this)
+#endif
+         return
+        end subroutine ObjectLockCtorCopy
+!--------------------------------------
+        subroutine ObjectLockLock(this)
+         implicit none
+         class(object_lock_t), intent(inout):: this
+         integer:: init_state
+#ifndef NO_OMP
+!$OMP ATOMIC CAPTURE
+         init_state=this%initialized
+         this%initialized=max(this%initialized,0)
+!$OMP END ATOMIC
+!$OMP FLUSH(this)
+         if(init_state.lt.0) then
+          !write(*,'("Initializing object lock ",i18," by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+          call omp_init_nest_lock(this%lock_omp)
+!$OMP ATOMIC WRITE
+          this%initialized=1
+!$OMP FLUSH(this)
+          !write(*,'("Locking/init object lock ",i18," by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+         elseif(init_state.eq.0) then
+          !write(*,'("Locking/wait object lock ",i18," by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+          do while(init_state.eq.0)
+!$OMP ATOMIC READ
+           init_state=this%initialized
+          enddo
+         !else
+          !write(*,'("Locking/ready object lock ",i18," by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+         endif
+         call omp_set_nest_lock(this%lock_omp)
+         !write(*,'("Lock ",i18," locked by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+#endif
+         return
+        end subroutine ObjectLockLock
+!----------------------------------------
+        subroutine ObjectLockUnlock(this)
+         implicit none
+         class(object_lock_t), intent(inout):: this
+         integer:: init_state,ax,bx
+#ifndef NO_OMP
+!$OMP FLUSH(this)
+!$OMP ATOMIC READ
+         init_state=this%initialized
+         if(init_state.gt.0) then
+          !write(*,'("Unlocking object lock ",i18," by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+          call omp_unset_nest_lock(this%lock_omp)
+          !write(*,'("Lock ",i18," unlocked by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+         else
+          ax=0; bx=1; bx=bx/ax !crash
+         endif
+#endif
+         return
+        end subroutine ObjectLockUnlock
+!---------------------------------------
+        subroutine ObjectLockClear(this)
+         implicit none
+         class(object_lock_t), intent(inout):: this
+#ifndef NO_OMP
+!$OMP ATOMIC WRITE
+         this%initialized=-1
+!$OMP FLUSH(this)
+#endif
+         return
+        end subroutine ObjectLockClear
+!----------------------------------------
+        subroutine object_lock_dtor(this)
+         implicit none
+         type(object_lock_t):: this
+         integer:: init_state
+#ifndef NO_OMP
+         init_state=0
+!$OMP FLUSH(this)
+         do while(init_state.eq.0)
+!$OMP ATOMIC READ
+          init_state=this%initialized
+         enddo
+         if(init_state.gt.0) then
+!$OMP ATOMIC WRITE
+          this%initialized=-1
+!$OMP FLUSH(this)
+          !write(*,'("Lock ",i18," destroyed by thread ",i4)') this%lock_omp,omp_get_thread_num() !debug
+          call omp_destroy_nest_lock(this%lock_omp)
+         endif
+#endif
+         return
+        end subroutine object_lock_dtor
+
        end module dil_basic
